@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>perfect — perf.data viewer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="title">
+        <span class="logo">⏱</span>
+        <span class="name">perfect</span>
+      </div>
+      <div class="file-info" id="file-info"></div>
+      <div class="actions">
+        <button id="open-btn" class="btn">Open…</button>
+        <input id="file-input" type="file" hidden accept=".data,application/octet-stream">
+      </div>
+    </header>
+
+    <main id="main">
+      <section id="timeline" class="timeline">
+        <div class="timeline-header">
+          <div class="lane-labels-header">Process / Thread</div>
+          <div class="ruler-wrap">
+            <canvas id="ruler-canvas"></canvas>
+          </div>
+        </div>
+        <div class="timeline-body">
+          <div class="lane-labels" id="lane-labels"></div>
+          <div class="lane-canvases-wrap" id="lane-wrap">
+            <canvas id="lanes-canvas"></canvas>
+            <div class="selection-overlay" id="selection-overlay"></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="splitter" id="splitter"></div>
+
+      <section id="bottom" class="bottom">
+        <div class="bottom-toolbar">
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-mode="calltree">Call Tree</button>
+            <button class="tab" data-mode="inverted">Inverted</button>
+            <button class="tab" data-mode="top">Top Functions</button>
+          </div>
+          <div class="filters">
+            <label class="filter"><input type="checkbox" id="hide-unknown" checked> Hide [unknown] kernel frames</label>
+            <label class="filter"><input type="text" id="search" placeholder="Search symbols…"></label>
+          </div>
+          <div class="stats" id="stats"></div>
+        </div>
+        <div class="tree-header">
+          <div class="col-symbol">Symbol</div>
+          <div class="col-total">Total</div>
+          <div class="col-self">Self</div>
+          <div class="col-dso">Module</div>
+        </div>
+        <div class="tree-scroll" id="tree-scroll">
+          <div class="tree" id="tree"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="dropzone" class="dropzone hidden">
+      <div class="dropzone-card">
+        <div class="dropzone-title">Drop perf.data here</div>
+        <div class="dropzone-sub">or click Open…</div>
+      </div>
+    </div>
+
+    <div id="empty" class="empty">
+      <div class="empty-card">
+        <h1>perfect</h1>
+        <p>A web viewer for Linux <code>perf.data</code> profiles.</p>
+        <p>Drop a <code>perf.data</code> file anywhere on this page, or pick one from below.</p>
+        <ul id="profile-list" class="profile-list"></ul>
+        <button id="empty-open-btn" class="btn primary">Open file…</button>
+      </div>
+    </div>
+
+    <div id="loading" class="loading hidden">
+      <div class="loading-card">
+        <div class="spinner"></div>
+        <div class="loading-text" id="loading-text">Loading profile…</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
