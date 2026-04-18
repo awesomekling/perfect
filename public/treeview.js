@@ -186,20 +186,28 @@ export class TreeView {
     const profile = this.profile;
     const fid = node._lazyFid;
     const hideUnknown = this.getHideUnknown();
-    // For each sample containing fid, find the innermost-most occurrence
-    // (smallest j where stackFrames[j] === fid). Children = frames at j-1..off (innermost..fid-1) walked as a top-down call tree rooted at fid.
-    // But Instruments-like callees view shows: what fid called. Innermost direction = "calls".
-    // Top-down here means: from fid, descend towards innermost. So children at depth 1 = frame just innermost of fid.
+    // Build the whole subtree rooted at `fid` eagerly — this is the only
+    // correct way to scope counts to "as called within this top function".
+    //
+    // For each sample containing fid, find the innermost occurrence
+    // (smallest j where stackFrames[j] === fid) and walk frames below it
+    // (towards the leaf), accumulating the call path. That guarantees
+    // every descendant's count is bounded by the ancestor's count, because
+    // each descendant entry also passes through the same fid occurrence.
+    //
+    // Descendants are NOT marked lazy: their children were populated on
+    // this same walk. That avoids the old bug where re-expanding a child
+    // re-walked *all* samples containing that child (including paths that
+    // never passed through the parent top function), producing descendant
+    // costs that exceeded their ancestors.
     for (const i of node._lazySamples) {
       const off = stackOffsets[i];
       const end = stackOffsets[i + 1];
-      // find smallest j (innermost) where frame == fid
       let k = -1;
       for (let j = off; j < end; j++) {
         if (stackFrames[j] === fid) { k = j; break; }
       }
       if (k < 0) continue;
-      // descend: at depth 1, fid's callee = stackFrames[k-1], then [k-2] ...
       let cur = node;
       let lastChild = null;
       for (let j = k - 1; j >= off; j--) {
@@ -215,29 +223,10 @@ export class TreeView {
         lastChild = child;
       }
       if (lastChild) lastChild.self++;
-      else if (k === off) node.self++; // fid itself was the leaf
+      // If fid was the innermost frame (k === off), node.self was already
+      // counted in _buildTopFunctions — don't double-count.
     }
-    // mark all newly created children as lazy too — they should expand to their own callees
-    for (const c of node.children.values()) {
-      if (c._lazy === undefined) {
-        c._lazy = true;
-        c._lazySamples = this._sampleIdxsContaining(node._lazySamples, c.fid);
-        c._lazyFid = c.fid;
-      }
-    }
-  }
-
-  _sampleIdxsContaining(sampleIdxs, fid) {
-    const { stackOffsets, stackFrames } = this.profile.samples;
-    const out = [];
-    for (const i of sampleIdxs) {
-      const off = stackOffsets[i];
-      const end = stackOffsets[i + 1];
-      for (let j = off; j < end; j++) {
-        if (stackFrames[j] === fid) { out.push(i); break; }
-      }
-    }
-    return out;
+    node._lazySamples = null;
   }
 
   _newNode(fid) {
