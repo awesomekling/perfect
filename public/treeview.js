@@ -61,12 +61,20 @@ export class TreeView {
 
     // expand top-level nodes by default for call tree / inverted
     this.expanded = new Set();
-    if (mode !== "top") {
-      // expand until depth 1 if obvious (single hot path)
-      const sortedKids = sortChildren(root);
-      // expand the first child if it dominates (>50% of total)
-      if (sortedKids.length > 0 && sortedKids[0].total > root.total * 0.5) {
-        this.expanded.add(sortedKids[0].id);
+    if (mode === "calltree" || mode === "inverted") {
+      // Auto-expand the hot path: walk dominant child while it captures
+      // a clear majority of its parent's samples.
+      let cur = root;
+      for (let depth = 0; depth < 64; depth++) {
+        const kids = sortChildren(cur);
+        if (kids.length === 0) break;
+        const top = kids[0];
+        // Expand if top child dominates its siblings (>=2x next child) OR is >40% of parent total.
+        const next = kids[1];
+        const dominant = !next || top.total >= next.total * 2 || top.total > cur.total * 0.4;
+        if (!dominant) break;
+        this.expanded.add(top.id);
+        cur = top;
       }
     }
 
