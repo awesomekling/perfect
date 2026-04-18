@@ -1,0 +1,12 @@
+{
+  "name": "perfect",
+  "version": "0.1.0",
+  "description": "Web-based perf.data profile viewer, modeled on Instruments.app",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
