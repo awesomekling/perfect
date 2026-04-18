@@ -1,0 +1,5 @@
+perf.data
+perf.data.old
+node_modules/
+.cache/
+*.log
