@@ -264,6 +264,16 @@ button { font: inherit; color: inherit; }
   flex: 1;
 }
 .tree-row .sym.unknown { color: var(--text-dim); font-style: italic; }
+.tree-row .sym mark {
+  background: #ffd24e44;
+  color: var(--text);
+  border-radius: 2px;
+  padding: 0 1px;
+  border-bottom: 1px solid var(--warn);
+}
+.tree-row.matched { background: #ffd24e10; }
+.tree-row.matched:nth-child(even) { background: #ffd24e16; }
+.tree-row.matched:hover { background: var(--bg-row-hover); }
 .tree-row .col-total, .tree-row .col-self {
   font-variant-numeric: tabular-nums;
   position: relative;

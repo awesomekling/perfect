@@ -11,7 +11,7 @@ import { fmtMs, fmtCount, fmtPct } from "./profile.js";
 const ROW_H = 22;
 
 export class TreeView {
-  constructor({ profile, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown }) {
+  constructor({ profile, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand }) {
     this.profile = profile;
     this.scrollEl = scrollEl;
     this.treeEl = treeEl;
@@ -20,10 +20,12 @@ export class TreeView {
     this.getFilter = getFilter;
     this.getSearch = getSearch;
     this.getHideUnknown = getHideUnknown;
+    this.getAutoExpand = getAutoExpand || (() => false);
 
-    this.expanded = new Set(); // node ids
+    this.expanded = new Set();         // user-driven expansion (persists)
+    this._searchExpanded = new Set();  // ephemeral, recomputed each refresh
     this.nodeId = 0;
-    this.flatRows = []; // [{node, depth}] currently visible
+    this.flatRows = []; // [{node, depth, isMatch}] currently visible
     this.tree = null;
     this.totalSamples = 0;
 
@@ -236,23 +238,68 @@ export class TreeView {
 
   _buildFlatRows() {
     const rows = [];
-    const search = this._search;
-    const walk = (node, depth) => {
+    const search = (this._search || "").toLowerCase();
+    const autoExpand = this.getAutoExpand();
+    const profile = this.profile;
+    this._searchExpanded = new Set();
+
+    const matches = search ? (fid) => profile.funcLabel(fid).toLowerCase().includes(search) : null;
+    const visible = new Set();
+
+    // First pass: walk tree, mark visible nodes, populate _searchExpanded.
+    // Returns true if `node` or any considered descendant matched.
+    const visit = (node) => {
+      let nodeMatched = matches ? matches(node.fid) : false;
+      let descMatched = false;
+
+      const userExpanded = this.expanded.has(node.id);
+      let descend;
+      if (!search) {
+        descend = userExpanded;
+      } else if (autoExpand) {
+        // Walk into all loaded children to find matches; do NOT force-expand
+        // lazy nodes (Top Functions can have huge subtrees).
+        descend = node._lazy ? userExpanded : true;
+      } else {
+        descend = userExpanded;
+      }
+
+      if (descend) {
+        for (const c of node.children.values()) {
+          if (visit(c)) descMatched = true;
+        }
+      }
+
+      if (!search || nodeMatched || descMatched) {
+        visible.add(node.id);
+        if (search && autoExpand && descMatched && !userExpanded) {
+          this._searchExpanded.add(node.id);
+        }
+        return true;
+      }
+      return false;
+    };
+    if (this.tree) {
+      for (const c of this.tree.children.values()) visit(c);
+    }
+
+    // Second pass: flatten visible nodes in display order using effective expansion.
+    const isExp = (id) => this.expanded.has(id) || this._searchExpanded.has(id);
+    const flatten = (node, depth) => {
       const sorted = sortChildren(node);
       for (const child of sorted) {
-        const matches = !search || this._matches(child.fid, search);
-        rows.push({ node: child, depth });
-        if (this.expanded.has(child.id)) {
+        if (search && !visible.has(child.id)) continue;
+        const isMatch = matches ? matches(child.fid) : false;
+        rows.push({ node: child, depth, isMatch });
+        if (isExp(child.id)) {
           if (child._lazy) this._expandLazy(child);
-          walk(child, depth + 1);
+          flatten(child, depth + 1);
         }
-        // search match boost: if search is on and node doesn't match, dim later
-        // (not implemented in first cut)
       }
     };
-    if (this.tree) walk(this.tree, 0);
+    if (this.tree) flatten(this.tree, 0);
+
     this.flatRows = rows;
-    // size the tree element to enable virtual scroll
     this.treeEl.style.height = (rows.length * ROW_H) + "px";
   }
 
@@ -275,23 +322,23 @@ export class TreeView {
 
     let html = "";
     for (let i = first; i < last; i++) {
-      const { node, depth } = this.flatRows[i];
+      const { node, depth, isMatch } = this.flatRows[i];
       const top = i * ROW_H;
       const fid = node.fid;
       const label = profile.funcLabel(fid);
       const dso = profile.funcDsoShort(fid);
       const isUnknown = profile.isUnknown(fid);
       const expandable = node.children.size > 0 || node._lazy;
-      const expanded = this.expanded.has(node.id);
+      const expanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
       const twisty = expandable ? (expanded ? "▾" : "▸") : "·";
       const pct = total ? (100 * node.total / total) : 0;
       const selfPct = total ? (100 * node.self / total) : 0;
-      const matched = search ? this._matches(fid, search) : false;
+      const labelHtml = isMatch ? highlightMatch(label, search) : escapeHtml(label);
       html += `
-        <div class="tree-row ${matched ? "matched" : ""}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
+        <div class="tree-row ${isMatch ? "matched" : ""}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
-            <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+            <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
           </div>
           <div class="col-total">
             <span class="bar" style="width:${pct.toFixed(2)}%"></span>
@@ -316,13 +363,30 @@ export class TreeView {
         const node = r.node;
         const expandable = node.children.size > 0 || node._lazy;
         if (!expandable) return;
-        if (this.expanded.has(node.id)) this.expanded.delete(node.id);
-        else this.expanded.add(node.id);
+        const isExpanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
+        if (isExpanded) {
+          this.expanded.delete(node.id);
+          this._searchExpanded.delete(node.id);
+        } else {
+          this.expanded.add(node.id);
+        }
         this._buildFlatRows();
         this._renderVisible();
       });
     }
   }
+}
+
+function highlightMatch(label, query) {
+  if (!query) return escapeHtml(label);
+  const lower = label.toLowerCase();
+  const i = lower.indexOf(query);
+  if (i < 0) return escapeHtml(label);
+  return (
+    escapeHtml(label.slice(0, i)) +
+    "<mark>" + escapeHtml(label.slice(i, i + query.length)) + "</mark>" +
+    escapeHtml(label.slice(i + query.length))
+  );
 }
 
 function sortChildren(node) {

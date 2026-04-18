@@ -330,21 +330,19 @@ function laneColor(i) {
 }
 
 function pickTicks(spanNs, pixelW) {
-  // pick a "nice" tick interval that gives ~6-12 ticks across width.
-  const target = Math.max(60, Math.floor(pixelW / 110));
+  // Aim for one label every ~110 pixels (so labels don't overlap).
+  const target = Math.max(2, Math.floor(pixelW / 110));
   const rawStep = spanNs / target;
-  const mags = [1, 2, 5, 10, 20, 50, 100, 200, 500];
+  // Pick a "nice" step >= rawStep from {1,2,5} * 10^k (in ns).
+  const exp = Math.floor(Math.log10(Math.max(1, rawStep)));
   let step = 1;
-  for (let exp = 0; exp < 12; exp++) {
-    const base = Math.pow(10, exp) * 1000; // 1µs
-    for (const m of mags) {
-      const s = base * m;
-      if (s >= rawStep) { step = s; break; }
+  outer: for (let e = exp; e <= exp + 2; e++) {
+    for (const m of [1, 2, 5]) {
+      const s = m * Math.pow(10, e);
+      if (s >= rawStep) { step = s; break outer; }
     }
-    if (step >= rawStep) break;
   }
   const out = [];
-  const startTick = Math.ceil(0 / step) * step;
-  for (let t = startTick; t <= spanNs; t += step) out.push(t);
+  for (let t = 0; t <= spanNs; t += step) out.push(t);
   return out;
 }

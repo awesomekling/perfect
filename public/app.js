@@ -23,6 +23,7 @@ const els = {
   stats: $("#stats"),
   hideUnknown: $("#hide-unknown"),
   search: $("#search"),
+  autoExpand: $("#auto-expand"),
   splitter: $("#splitter"),
   timeline: $("#timeline"),
 };
@@ -80,6 +81,7 @@ function setProfile(json, name) {
     }),
     getHideUnknown: () => els.hideUnknown.checked,
     getSearch: () => els.search.value,
+    getAutoExpand: () => els.autoExpand.checked,
   });
   treeView.refresh();
 }
@@ -103,10 +105,11 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
+els.autoExpand.addEventListener("change", () => treeView && treeView.refresh());
 let searchTimer;
 els.search.addEventListener("input", () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => treeView && treeView.refresh(), 200);
+  searchTimer = setTimeout(() => treeView && treeView.refresh(), 150);
 });
 
 // ----- File picker / drag-drop -----
