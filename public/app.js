@@ -140,16 +140,27 @@ window.addEventListener("drop", async (e) => {
 });
 
 async function uploadAndLoad(file) {
-  // For local files, the simplest path is: try the server-side known path first
-  // (matches by name), else upload.
+  // Try server-side lookup first (avoids the upload entirely if it's a known file).
   const list = await listProfiles();
   const match = list.find((p) => p.name === file.name && p.size === file.size);
   if (match) {
     await loadProfileByPath(match.path, file.name);
     return;
   }
-  // Fallback: upload to /api/upload (not implemented in first cut). Show error.
-  alert(`File "${file.name}" not found on the server. For now, place it in the server's working directory and reload.`);
+  // Otherwise stream the file body up to /api/upload and then fetch by returned path.
+  showLoading(`Uploading ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`);
+  try {
+    const r = await fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      body: file,
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const { path: uploadedPath } = await r.json();
+    await loadProfileByPath(uploadedPath, file.name);
+  } catch (e) {
+    alert("Upload failed: " + e.message);
+    hideLoading();
+  }
 }
 
 // ----- Splitter -----

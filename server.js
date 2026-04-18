@@ -89,8 +89,42 @@ async function loadProfile(absPath) {
   return cache;
 }
 
+async function handleUpload(req, res) {
+  const u = new URL(req.url, "http://x");
+  const name = (u.searchParams.get("name") || "uploaded.data").replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const upDir = path.join(CACHE, "uploads");
+  await fsp.mkdir(upDir, { recursive: true });
+  // Stream body to a tmp file, hash as we go.
+  const hash = crypto.createHash("sha256");
+  const tmp = path.join(upDir, `incoming-${Date.now()}-${Math.random().toString(36).slice(2)}.data`);
+  const stream = fs.createWriteStream(tmp);
+  let bytes = 0;
+  await new Promise((resolve, reject) => {
+    req.on("data", (b) => { hash.update(b); bytes += b.length; });
+    req.on("end", resolve);
+    req.on("error", reject);
+    req.pipe(stream);
+  });
+  await new Promise((r) => stream.on("close", r));
+  const sha = hash.digest("hex").slice(0, 16);
+  const ext = name.match(/\.[a-zA-Z0-9]+$/)?.[0] || ".data";
+  const finalPath = path.join(upDir, `${sha}${ext}`);
+  try {
+    await fsp.access(finalPath);
+    await fsp.unlink(tmp); // already have it
+  } catch {
+    await fsp.rename(tmp, finalPath);
+  }
+  process.stderr.write(`upload: ${name} -> ${finalPath} (${bytes} bytes)\n`);
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ path: finalPath, name, size: bytes }));
+}
+
 async function handleApi(req, res) {
   const u = new URL(req.url, "http://x");
+  if (req.method === "POST" && u.pathname === "/api/upload") {
+    return await handleUpload(req, res);
+  }
   if (u.pathname === "/api/profiles") {
     const list = await listProfiles();
     res.writeHead(200, { "content-type": "application/json" });
@@ -101,6 +135,10 @@ async function handleApi(req, res) {
     const p = u.searchParams.get("path");
     if (!p) return send(res, 400, "missing path");
     let absPath = path.resolve(process.cwd(), p);
+    // Only allow files in cwd or in .cache/uploads/
+    const inCwd = absPath.startsWith(path.resolve(process.cwd()) + path.sep) || path.dirname(absPath) === path.resolve(process.cwd());
+    const inUploads = absPath.startsWith(path.join(CACHE, "uploads") + path.sep);
+    if (!inCwd && !inUploads) return send(res, 403, "path not allowed");
     try {
       await fsp.access(absPath);
     } catch {
