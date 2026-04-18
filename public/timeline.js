@@ -159,7 +159,7 @@ export class Timeline {
     const w = c.width / dpr, h = c.height / dpr;
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = "#9a9aa2";
-    ctx.font = "11px ui-monospace, Menlo, monospace";
+    ctx.font = '11px "JetBrains Mono", ui-monospace, Menlo, monospace';
     ctx.textBaseline = "middle";
     const span = this.viewEndNs - this.viewStartNs;
     const ticks = pickTicks(span, w);

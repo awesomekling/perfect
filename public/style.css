@@ -8,7 +8,8 @@
   --border-strong: #45454f;
   --text: #e8e8ea;
   --text-dim: #9a9aa2;
-  --text-mono: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-mono: 12px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --mono-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --accent: #4ea1ff;
   --accent-dim: #4ea1ff44;
   --selection: rgba(78, 161, 255, 0.18);
