@@ -1,4 +1,4 @@
-import { Profile, fmtMs } from "./profile.js";
+import { Profile, fmtMs, fmtTimeShort } from "./profile.js";
 import { Timeline } from "./timeline.js";
 import { TreeView } from "./treeview.js";
 
@@ -60,7 +60,10 @@ async function loadProfileByPath(p, name) {
 function setProfile(json, name) {
   profile = new Profile(json);
   els.empty.classList.add("hidden");
-  els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples · ${fmtMs(profile.durationNs)} · ${profile.threads.length} threads · ${profile.functions.length.toLocaleString()} functions`;
+  const onCpu = profile.timeKnown ? ` · ≈${fmtTimeShort(profile.sampleCount * profile.nsPerSample)} on-CPU` : "";
+  const ev = profile.meta.eventName ? ` · ${escapeHtml(profile.meta.eventName)}` : "";
+  const freq = profile.meta.sampleFreq ? ` @ ${profile.meta.sampleFreq} Hz` : "";
+  els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples${onCpu} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
 
   timeline = new Timeline({
     profile,

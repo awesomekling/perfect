@@ -6,7 +6,7 @@
 // Recursion: only the innermost-most occurrence of fid in a sample contributes
 // to its callees (so we don't double-count recursive frames).
 
-import { fmtMs, fmtCount, fmtPct } from "./profile.js";
+import { fmtMs, fmtCount, fmtPct, fmtTimeShort } from "./profile.js";
 
 const ROW_H = 22;
 
@@ -97,7 +97,10 @@ export class TreeView {
     const { startNs, endNs, tids } = this.getFilter();
     const dur = endNs - startNs;
     const tidStr = tids ? `${tids.size} thread${tids.size === 1 ? "" : "s"}` : "all threads";
-    this.statsEl.textContent = `${this.totalSamples.toLocaleString()} samples · ${tidStr} · ${fmtMs(dur)} · built in ${buildMs.toFixed(0)}ms`;
+    const onCpu = this.profile.timeKnown
+      ? ` · ≈${fmtTimeShort(this.totalSamples * this.profile.nsPerSample)} on-CPU`
+      : "";
+    this.statsEl.textContent = `${this.totalSamples.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window · built in ${buildMs.toFixed(0)}ms`;
   }
 
   _buildCallTree(sampleIdxs, inverted, hideUnknown) {
@@ -445,19 +448,31 @@ export class TreeView {
       const isCurrent = i === currentMatchRowIdx;
       const isSelected = i === this._selectedIdx;
       const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}${isSelected ? " selected" : ""}`;
+      const totalTxt = profile.timeKnown
+        ? fmtTimeShort(node.total * profile.nsPerSample)
+        : node.total.toLocaleString();
+      const selfTxt = profile.timeKnown
+        ? fmtTimeShort(node.self * profile.nsPerSample)
+        : node.self.toLocaleString();
+      const totalTip = profile.timeKnown
+        ? `${node.total.toLocaleString()} samples · ${fmtTimeShort(node.total * profile.nsPerSample)} (${pct.toFixed(2)}%)`
+        : `${node.total.toLocaleString()} samples (${pct.toFixed(2)}%)`;
+      const selfTip = profile.timeKnown
+        ? `${node.self.toLocaleString()} samples · ${fmtTimeShort(node.self * profile.nsPerSample)} (${selfPct.toFixed(2)}%)`
+        : `${node.self.toLocaleString()} samples (${selfPct.toFixed(2)}%)`;
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
             <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
           </div>
-          <div class="col-total">
+          <div class="col-total" title="${totalTip}">
             <span class="bar" style="width:${pct.toFixed(2)}%"></span>
-            <span class="num">${node.total.toLocaleString()} (${pct.toFixed(1)}%)</span>
+            <span class="num">${totalTxt} <span class="pct">${pct.toFixed(1)}%</span></span>
           </div>
-          <div class="col-self">
+          <div class="col-self" title="${selfTip}">
             <span class="bar" style="width:${selfPct.toFixed(2)}%"></span>
-            <span class="num">${node.self.toLocaleString()}</span>
+            <span class="num">${selfTxt}${node.self > 0 ? ` <span class="pct">${selfPct.toFixed(1)}%</span>` : ""}</span>
           </div>
           <div class="col-dso" title="${escapeHtml(profile.funcDso(fid))}">${escapeHtml(dso)}</div>
         </div>

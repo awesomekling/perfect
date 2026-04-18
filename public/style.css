@@ -338,7 +338,15 @@ button { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
   position: relative;
   padding: 0 8px;
+  text-align: right;
 }
+.tree-row .num .pct {
+  color: var(--text-dim);
+  margin-left: 4px;
+  font-size: 10px;
+}
+.tree-row.selected .num .pct,
+.tree-row.current-match .num .pct { color: var(--text); }
 .tree-row .bar {
   position: absolute;
   left: 0; top: 0; bottom: 0;

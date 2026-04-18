@@ -176,12 +176,47 @@ export class PerfParser {
   }
 }
 
+// Best-effort: pull sample_freq + event name from the perf.data header.
+// Returns { sampleFreq, sampleFreqMode, eventName } or {} if unavailable.
+async function readPerfHeader(filePath) {
+  return new Promise((resolve) => {
+    const proc = spawn(PERF_BIN, ["report", "--header-only", "-i", filePath], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    proc.stdout.on("data", (b) => { stdout += b.toString(); });
+    proc.on("close", () => {
+      const out = {};
+      const eventLine = stdout.split("\n").find((l) => l.startsWith("# event :"));
+      if (eventLine) {
+        const nameM = /name\s*=\s*([^,]+)/.exec(eventLine);
+        if (nameM) out.eventName = nameM[1].trim();
+        const freqValM = /sample_freq\s*\}\s*=\s*(\d+)/.exec(eventLine);
+        const freqModeM = /\bfreq\s*=\s*(\d+)/.exec(eventLine);
+        if (freqValM && freqModeM && +freqModeM[1] === 1) {
+          out.sampleFreq = +freqValM[1];
+        }
+      }
+      const cmdM = /^# cmdline\s*:\s*(.+)$/m.exec(stdout);
+      if (cmdM) out.cmdline = cmdM[1].trim();
+      const hostM = /^# hostname\s*:\s*(.+)$/m.exec(stdout);
+      if (hostM) out.hostname = hostM[1].trim();
+      const cpuM = /^# cpudesc\s*:\s*(.+)$/m.exec(stdout);
+      if (cpuM) out.cpudesc = cpuM[1].trim();
+      resolve(out);
+    });
+    proc.on("error", () => resolve({}));
+  });
+}
+
 export async function parsePerfData(filePath, { onProgress } = {}) {
   const st = await stat(filePath);
+  const header = await readPerfHeader(filePath);
   const meta = {
     file: path.resolve(filePath),
     fileSize: st.size,
     fileMtimeMs: st.mtimeMs,
+    ...header,
   };
 
   const proc = spawn(

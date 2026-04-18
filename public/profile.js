@@ -20,6 +20,10 @@ export class Profile {
     this.endNs = this.meta.endNs;
     this.durationNs = this.endNs - this.startNs;
     this.sampleCount = this.samples.times.length;
+    // For frequency-based sampling (`perf record -F N`), each sample roughly
+    // represents 1/N seconds of on-CPU time.
+    this.nsPerSample = this.meta.sampleFreq > 0 ? 1e9 / this.meta.sampleFreq : 0;
+    this.timeKnown = this.nsPerSample > 0;
 
     // index threads by tid
     this.threadByTid = new Map();
@@ -94,6 +98,15 @@ export function fmtMs(ns) {
   if (ms < 1) return `${(ns / 1e3).toFixed(1)} µs`;
   if (ms < 1000) return `${ms.toFixed(2)} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
+}
+// Compact time formatter for tight columns: 12.3s, 482ms, 18.4ms, 873µs.
+export function fmtTimeShort(ns) {
+  if (!isFinite(ns) || ns <= 0) return "0";
+  if (ns >= 1e9) return `${(ns / 1e9).toFixed(2)} s`;
+  if (ns >= 1e7) return `${Math.round(ns / 1e6)} ms`;
+  if (ns >= 1e6) return `${(ns / 1e6).toFixed(1)} ms`;
+  if (ns >= 1e4) return `${Math.round(ns / 1e3)} µs`;
+  return `${(ns / 1e3).toFixed(1)} µs`;
 }
 
 export function fmtCount(n) {
