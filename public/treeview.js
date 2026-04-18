@@ -28,6 +28,9 @@ export class TreeView {
     this.flatRows = []; // [{node, depth, isMatch}] currently visible
     this.tree = null;
     this.totalSamples = 0;
+    this._matchRowIndices = []; // indices into flatRows for matched rows
+    this._currentMatch = -1;
+    this.onMatchesChange = null; // (cur, total) => void
 
     this.scrollEl.addEventListener("scroll", () => this._renderVisible());
     window.addEventListener("resize", () => this._renderVisible());
@@ -244,51 +247,31 @@ export class TreeView {
     this._searchExpanded = new Set();
 
     const matches = search ? (fid) => profile.funcLabel(fid).toLowerCase().includes(search) : null;
-    const visible = new Set();
 
-    // First pass: walk tree, mark visible nodes, populate _searchExpanded.
-    // Returns true if `node` or any considered descendant matched.
-    const visit = (node) => {
-      let nodeMatched = matches ? matches(node.fid) : false;
-      let descMatched = false;
-
-      const userExpanded = this.expanded.has(node.id);
-      let descend;
-      if (!search) {
-        descend = userExpanded;
-      } else if (autoExpand) {
-        // Walk into all loaded children to find matches; do NOT force-expand
-        // lazy nodes (Top Functions can have huge subtrees).
-        descend = node._lazy ? userExpanded : true;
-      } else {
-        descend = userExpanded;
-      }
-
-      if (descend) {
-        for (const c of node.children.values()) {
-          if (visit(c)) descMatched = true;
+    // If auto-expand is on with a search, walk the tree once and flag every
+    // ancestor of any matching node so its descendant becomes reachable.
+    // We don't force-expand lazy Top Functions children — too expensive.
+    if (search && autoExpand && this.tree) {
+      const visit = (node, ancestors) => {
+        if (matches(node.fid)) {
+          for (const a of ancestors) {
+            if (!this.expanded.has(a.id)) this._searchExpanded.add(a.id);
+          }
         }
-      }
-
-      if (!search || nodeMatched || descMatched) {
-        visible.add(node.id);
-        if (search && autoExpand && descMatched && !userExpanded) {
-          this._searchExpanded.add(node.id);
-        }
-        return true;
-      }
-      return false;
-    };
-    if (this.tree) {
-      for (const c of this.tree.children.values()) visit(c);
+        if (node._lazy) return;
+        ancestors.push(node);
+        for (const c of node.children.values()) visit(c, ancestors);
+        ancestors.pop();
+      };
+      for (const c of this.tree.children.values()) visit(c, []);
     }
 
-    // Second pass: flatten visible nodes in display order using effective expansion.
+    // Flatten the tree using effective expansion. No filtering — the full
+    // (effectively-expanded) tree is shown. Matches are flagged inline.
     const isExp = (id) => this.expanded.has(id) || this._searchExpanded.has(id);
     const flatten = (node, depth) => {
       const sorted = sortChildren(node);
       for (const child of sorted) {
-        if (search && !visible.has(child.id)) continue;
         const isMatch = matches ? matches(child.fid) : false;
         rows.push({ node: child, depth, isMatch });
         if (isExp(child.id)) {
@@ -300,12 +283,45 @@ export class TreeView {
     if (this.tree) flatten(this.tree, 0);
 
     this.flatRows = rows;
+    // Re-index matches.
+    this._matchRowIndices = [];
+    for (let i = 0; i < rows.length; i++) if (rows[i].isMatch) this._matchRowIndices.push(i);
+    if (this._matchRowIndices.length === 0) {
+      this._currentMatch = -1;
+    } else if (this._currentMatch < 0 || this._currentMatch >= this._matchRowIndices.length) {
+      this._currentMatch = 0;
+    }
+    if (this.onMatchesChange) this.onMatchesChange(this._currentMatch, this._matchRowIndices.length);
     this.treeEl.style.height = (rows.length * ROW_H) + "px";
   }
 
-  _matches(fid, q) {
-    const label = this.profile.funcLabel(fid).toLowerCase();
-    return label.includes(q);
+  resetMatchCursor() {
+    this._currentMatch = this._matchRowIndices.length > 0 ? 0 : -1;
+    this._scrollToCurrentMatch();
+    this._renderVisible();
+    if (this.onMatchesChange) this.onMatchesChange(this._currentMatch, this._matchRowIndices.length);
+  }
+
+  nextMatch(delta = 1) {
+    const n = this._matchRowIndices.length;
+    if (n === 0) return;
+    this._currentMatch = ((this._currentMatch + delta) % n + n) % n;
+    this._scrollToCurrentMatch();
+    this._renderVisible();
+    if (this.onMatchesChange) this.onMatchesChange(this._currentMatch, n);
+  }
+
+  _scrollToCurrentMatch() {
+    if (this._currentMatch < 0) return;
+    const rowIdx = this._matchRowIndices[this._currentMatch];
+    if (rowIdx == null) return;
+    const top = rowIdx * ROW_H;
+    const sc = this.scrollEl;
+    const visTop = sc.scrollTop;
+    const visBot = visTop + sc.clientHeight;
+    if (top < visTop || top + ROW_H > visBot) {
+      sc.scrollTop = Math.max(0, top - sc.clientHeight / 2 + ROW_H / 2);
+    }
   }
 
   _renderVisible() {
@@ -319,6 +335,8 @@ export class TreeView {
     const profile = this.profile;
     const total = this.tree ? this.tree.total : 0;
     const search = this._search;
+
+    const currentMatchRowIdx = this._currentMatch >= 0 ? this._matchRowIndices[this._currentMatch] : -1;
 
     let html = "";
     for (let i = first; i < last; i++) {
@@ -334,8 +352,10 @@ export class TreeView {
       const pct = total ? (100 * node.total / total) : 0;
       const selfPct = total ? (100 * node.self / total) : 0;
       const labelHtml = isMatch ? highlightMatch(label, search) : escapeHtml(label);
+      const isCurrent = i === currentMatchRowIdx;
+      const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}`;
       html += `
-        <div class="tree-row ${isMatch ? "matched" : ""}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
+        <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
             <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>

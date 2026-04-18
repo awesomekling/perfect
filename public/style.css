@@ -204,6 +204,49 @@ button { font: inherit; color: inherit; }
   background: #1a1a1e; border: 1px solid var(--border); color: var(--text);
   padding: 3px 6px; border-radius: 4px; font: inherit; width: 200px;
 }
+.search-group {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #1a1a1e;
+  overflow: hidden;
+  font-size: 12px;
+}
+.search-group input[type="text"] {
+  border: none;
+  background: transparent;
+  padding: 3px 8px;
+  font: inherit;
+  color: var(--text);
+  width: 200px;
+  outline: none;
+}
+.search-group .search-count {
+  padding: 3px 8px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--border);
+  align-self: center;
+  min-width: 56px;
+  text-align: right;
+}
+.search-group .search-count.has-matches { color: var(--text); }
+.search-group .search-count.no-matches { color: var(--warn); }
+.btn-icon {
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 0 9px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.btn-icon:hover { background: #2c2c33; color: var(--text); }
+.btn-icon:disabled { opacity: 0.4; cursor: default; }
+.btn-icon:disabled:hover { background: transparent; color: var(--text-dim); }
 .stats { margin-left: auto; color: var(--text-dim); font-size: 11px; }
 
 .tree-header {
@@ -273,8 +316,17 @@ button { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--warn);
 }
 .tree-row.matched { background: #ffd24e10; }
-.tree-row.matched:nth-child(even) { background: #ffd24e16; }
 .tree-row.matched:hover { background: var(--bg-row-hover); }
+.tree-row.current-match {
+  background: rgba(255, 210, 78, 0.22);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+.tree-row.current-match:hover { background: rgba(255, 210, 78, 0.28); }
+.tree-row.current-match .sym mark {
+  background: var(--warn);
+  color: #1a1a1e;
+  border-bottom: none;
+}
 .tree-row .col-total, .tree-row .col-self {
   font-variant-numeric: tabular-nums;
   position: relative;

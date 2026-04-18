@@ -23,6 +23,9 @@ const els = {
   stats: $("#stats"),
   hideUnknown: $("#hide-unknown"),
   search: $("#search"),
+  searchCount: $("#search-count"),
+  searchPrev: $("#search-prev"),
+  searchNext: $("#search-next"),
   autoExpand: $("#auto-expand"),
   splitter: $("#splitter"),
   timeline: $("#timeline"),
@@ -83,6 +86,22 @@ function setProfile(json, name) {
     getSearch: () => els.search.value,
     getAutoExpand: () => els.autoExpand.checked,
   });
+  treeView.onMatchesChange = (cur, total) => {
+    if (!els.search.value) {
+      els.searchCount.textContent = "";
+      els.searchCount.classList.remove("has-matches", "no-matches");
+    } else if (total === 0) {
+      els.searchCount.textContent = "0/0";
+      els.searchCount.classList.remove("has-matches");
+      els.searchCount.classList.add("no-matches");
+    } else {
+      els.searchCount.textContent = `${cur + 1}/${total}`;
+      els.searchCount.classList.add("has-matches");
+      els.searchCount.classList.remove("no-matches");
+    }
+    els.searchPrev.disabled = total === 0;
+    els.searchNext.disabled = total === 0;
+  };
   treeView.refresh();
 }
 
@@ -105,12 +124,35 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
-els.autoExpand.addEventListener("change", () => treeView && treeView.refresh());
+els.autoExpand.addEventListener("change", () => {
+  if (!treeView) return;
+  treeView._currentMatch = -1; // re-anchor to first match for the new tree
+  treeView.refresh();
+  treeView.resetMatchCursor();
+});
+
 let searchTimer;
 els.search.addEventListener("input", () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => treeView && treeView.refresh(), 150);
+  searchTimer = setTimeout(() => {
+    if (!treeView) return;
+    treeView._currentMatch = -1;
+    treeView.refresh();
+    treeView.resetMatchCursor();
+  }, 120);
 });
+els.search.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (!treeView) return;
+    treeView.nextMatch(e.shiftKey ? -1 : 1);
+  } else if (e.key === "Escape") {
+    els.search.value = "";
+    els.search.dispatchEvent(new Event("input"));
+  }
+});
+els.searchPrev.addEventListener("click", () => treeView && treeView.nextMatch(-1));
+els.searchNext.addEventListener("click", () => treeView && treeView.nextMatch(1));
 
 // ----- File picker / drag-drop -----
 els.openBtn.addEventListener("click", () => els.fileInput.click());

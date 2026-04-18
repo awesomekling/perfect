@@ -48,8 +48,13 @@
           </div>
           <div class="filters">
             <label class="filter"><input type="checkbox" id="hide-unknown" checked> Hide [unknown] kernel frames</label>
-            <label class="filter"><input type="text" id="search" placeholder="Search symbols…"></label>
-            <label class="filter"><input type="checkbox" id="auto-expand"> Auto-expand</label>
+            <div class="search-group">
+              <input type="text" id="search" placeholder="Search symbols…">
+              <span id="search-count" class="search-count">0/0</span>
+              <button id="search-prev" class="btn-icon" title="Previous match (Shift+Enter)" aria-label="Previous">‹</button>
+              <button id="search-next" class="btn-icon" title="Next match (Enter)" aria-label="Next">›</button>
+            </div>
+            <label class="filter"><input type="checkbox" id="auto-expand" checked> Auto-expand to matches</label>
           </div>
           <div class="stats" id="stats"></div>
         </div>
