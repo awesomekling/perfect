@@ -154,6 +154,28 @@ els.search.addEventListener("keydown", (e) => {
 els.searchPrev.addEventListener("click", () => treeView && treeView.nextMatch(-1));
 els.searchNext.addEventListener("click", () => treeView && treeView.nextMatch(1));
 
+// ----- Keyboard tree navigation -----
+window.addEventListener("keydown", (e) => {
+  if (!treeView) return;
+  // Don't steal keys when the user is typing in an input.
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  switch (e.key) {
+    case "ArrowDown":  e.preventDefault(); treeView.moveSelection(1); break;
+    case "ArrowUp":    e.preventDefault(); treeView.moveSelection(-1); break;
+    case "ArrowLeft":  e.preventDefault(); treeView.collapseOrParent(); break;
+    case "ArrowRight": e.preventDefault(); treeView.expandOrChild(); break;
+    case "PageDown":   e.preventDefault(); treeView.movePage(1); break;
+    case "PageUp":     e.preventDefault(); treeView.movePage(-1); break;
+    case "Home":       e.preventDefault(); treeView.selectAt(0); break;
+    case "End":        e.preventDefault(); treeView.selectAt(treeView.flatRows.length - 1); break;
+    case "Enter":
+    case " ":          e.preventDefault(); treeView.toggleSelected(); break;
+    case "/":          e.preventDefault(); els.search.focus(); els.search.select(); break;
+  }
+});
+
 // ----- File picker / drag-drop -----
 els.openBtn.addEventListener("click", () => els.fileInput.click());
 els.emptyOpenBtn.addEventListener("click", () => els.fileInput.click());

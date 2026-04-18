@@ -31,6 +31,8 @@ export class TreeView {
     this._matchRowIndices = []; // indices into flatRows for matched rows
     this._currentMatch = -1;
     this.onMatchesChange = null; // (cur, total) => void
+    this._selectedIdx = 0;     // keyboard selection (index in flatRows)
+    this._selectedNodeId = null; // try to preserve selection across refreshes
 
     this.scrollEl.addEventListener("scroll", () => this._renderVisible());
     window.addEventListener("resize", () => this._renderVisible());
@@ -292,7 +294,95 @@ export class TreeView {
       this._currentMatch = 0;
     }
     if (this.onMatchesChange) this.onMatchesChange(this._currentMatch, this._matchRowIndices.length);
+    // Preserve keyboard selection across refresh by node id when possible.
+    if (this._selectedNodeId != null) {
+      const idx = rows.findIndex((r) => r.node.id === this._selectedNodeId);
+      if (idx >= 0) this._selectedIdx = idx;
+      else this._selectedIdx = Math.min(this._selectedIdx, Math.max(0, rows.length - 1));
+    } else if (this._selectedIdx >= rows.length) {
+      this._selectedIdx = Math.max(0, rows.length - 1);
+    }
+    if (rows.length > 0) this._selectedNodeId = rows[this._selectedIdx].node.id;
+    else this._selectedNodeId = null;
     this.treeEl.style.height = (rows.length * ROW_H) + "px";
+  }
+
+  // ----- Keyboard navigation -----
+  selectAt(idx) {
+    if (this.flatRows.length === 0) return;
+    this._selectedIdx = Math.max(0, Math.min(this.flatRows.length - 1, idx));
+    this._selectedNodeId = this.flatRows[this._selectedIdx].node.id;
+    this._scrollToSelected();
+    this._renderVisible();
+  }
+  moveSelection(delta) {
+    this.selectAt(this._selectedIdx + delta);
+  }
+  movePage(dir) {
+    const visible = Math.max(1, Math.floor(this.scrollEl.clientHeight / ROW_H) - 1);
+    this.moveSelection(dir * visible);
+  }
+  toggleSelected() {
+    const r = this.flatRows[this._selectedIdx];
+    if (!r) return;
+    const node = r.node;
+    if (!(node.children.size > 0 || node._lazy)) return;
+    const expanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
+    if (expanded) {
+      this.expanded.delete(node.id);
+      this._searchExpanded.delete(node.id);
+    } else {
+      this.expanded.add(node.id);
+    }
+    this._buildFlatRows();
+    this._renderVisible();
+  }
+  collapseOrParent() {
+    const r = this.flatRows[this._selectedIdx];
+    if (!r) return;
+    const node = r.node;
+    const expanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
+    if (expanded) {
+      this.expanded.delete(node.id);
+      this._searchExpanded.delete(node.id);
+      this._buildFlatRows();
+      this._renderVisible();
+    } else {
+      // jump to nearest ancestor row
+      const targetDepth = r.depth - 1;
+      if (targetDepth < 0) return;
+      for (let i = this._selectedIdx - 1; i >= 0; i--) {
+        if (this.flatRows[i].depth === targetDepth) {
+          this.selectAt(i);
+          return;
+        }
+      }
+    }
+  }
+  expandOrChild() {
+    const r = this.flatRows[this._selectedIdx];
+    if (!r) return;
+    const node = r.node;
+    const expandable = node.children.size > 0 || node._lazy;
+    if (!expandable) return;
+    const expanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
+    if (!expanded) {
+      this.expanded.add(node.id);
+      this._buildFlatRows();
+      this._renderVisible();
+    } else {
+      // step into first child if present
+      const next = this.flatRows[this._selectedIdx + 1];
+      if (next && next.depth > r.depth) this.selectAt(this._selectedIdx + 1);
+    }
+  }
+  _scrollToSelected() {
+    const top = this._selectedIdx * ROW_H;
+    const sc = this.scrollEl;
+    const visTop = sc.scrollTop;
+    const visBot = visTop + sc.clientHeight;
+    if (top < visTop) sc.scrollTop = top;
+    else if (top + ROW_H > visBot) sc.scrollTop = top + ROW_H - sc.clientHeight;
   }
 
   resetMatchCursor() {
@@ -353,7 +443,8 @@ export class TreeView {
       const selfPct = total ? (100 * node.self / total) : 0;
       const labelHtml = isMatch ? highlightMatch(label, search) : escapeHtml(label);
       const isCurrent = i === currentMatchRowIdx;
-      const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}`;
+      const isSelected = i === this._selectedIdx;
+      const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}${isSelected ? " selected" : ""}`;
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
@@ -380,17 +471,21 @@ export class TreeView {
       row.addEventListener("click", (e) => {
         const r = this.flatRows[i];
         if (!r) return;
+        // always select clicked row
+        this._selectedIdx = i;
+        this._selectedNodeId = r.node.id;
         const node = r.node;
         const expandable = node.children.size > 0 || node._lazy;
-        if (!expandable) return;
-        const isExpanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
-        if (isExpanded) {
-          this.expanded.delete(node.id);
-          this._searchExpanded.delete(node.id);
-        } else {
-          this.expanded.add(node.id);
+        if (expandable) {
+          const isExpanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
+          if (isExpanded) {
+            this.expanded.delete(node.id);
+            this._searchExpanded.delete(node.id);
+          } else {
+            this.expanded.add(node.id);
+          }
+          this._buildFlatRows();
         }
-        this._buildFlatRows();
         this._renderVisible();
       });
     }

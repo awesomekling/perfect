@@ -282,7 +282,14 @@ button { font: inherit; color: inherit; }
 }
 .tree-row:nth-child(even) { background: var(--bg-row-alt); }
 .tree-row:hover { background: var(--bg-row-hover); }
-.tree-row.selected { background: var(--accent-dim); }
+.tree-row.selected {
+  background: var(--accent-dim);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tree-row.selected.current-match {
+  background: rgba(78, 161, 255, 0.32);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
 .tree-row .col-symbol {
   display: flex;
   align-items: center;
