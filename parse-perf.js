@@ -16,10 +16,8 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { stat } from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
 
-const PERF_BIN = process.env.PERF_BIN || path.join(os.homedir(), "linux-6.8.0/tools/perf/perf");
+const PERF_BIN = process.env.PERF_BIN || "perf";
 
 // header line: "COMM  PID/TID  SECS.MICROS: "
 // COMM may have leading spaces and contain spaces ("IPC IO", "Pool/0").
