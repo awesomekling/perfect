@@ -51,12 +51,6 @@ export class Timeline {
       this.laneByTid.set(l.tid, l);
     });
 
-    // Pre-bin per-lane sample density at high resolution for fast redraw.
-    this._densityBins = null;
-    this._binCount = 0;
-    this._binStartNs = 0;
-    this._binEndNs = 0;
-
     this._buildLabels();
     this._installInput();
     this.resize();
@@ -116,26 +110,7 @@ export class Timeline {
     this.rulerCanvas.style.width = rw + "px";
     this.rulerCanvas.style.height = "24px";
 
-    this._buildDensityBins(w);
     this.draw();
-  }
-
-  _buildDensityBins(pixelW) {
-    const N = Math.max(64, Math.min(4096, pixelW * 2));
-    this._binCount = N;
-    this._binStartNs = this.profile.startNs;
-    this._binEndNs = this.profile.endNs;
-    const span = Math.max(1, this._binEndNs - this._binStartNs);
-    const bins = new Map(); // tid -> Uint32Array(N)
-    for (const ln of this.lanes) bins.set(ln.tid, new Uint32Array(N));
-    const { times, tids } = this.profile.samples;
-    for (let i = 0; i < times.length; i++) {
-      const t = times[i];
-      const idx = Math.min(N - 1, Math.floor((t - this._binStartNs) * N / span));
-      const arr = bins.get(tids[i]);
-      if (arr) arr[idx]++;
-    }
-    this._densityBins = bins;
   }
 
   draw() {
@@ -204,52 +179,57 @@ export class Timeline {
       ctx.stroke();
     }
 
-    // Lanes
-    const N = this._binCount;
-    const binStart = this._binStartNs, binEnd = this._binEndNs;
-    const binSpan = binEnd - binStart;
+    // Lane backgrounds
     for (let li = 0; li < this.lanes.length; li++) {
-      const lane = this.lanes[li];
       const y = li * LANE_H;
-      // alternating background
       ctx.fillStyle = li % 2 === 0 ? "#22222a" : "#25252d";
       ctx.fillRect(0, y, w, LANE_H);
-      // separator
       ctx.fillStyle = "#1a1a1e";
       ctx.fillRect(0, y + LANE_H - 1, w, 1);
+    }
 
-      const bins = this._densityBins.get(lane.tid);
-      if (!bins) continue;
+    // Bucket visible samples per-lane per-pixel by binary-searching the time array.
+    const W = Math.max(1, Math.floor(w));
+    const L = this.lanes.length;
+    const tidToIdx = new Map();
+    this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
+    const buckets = new Uint32Array(W * L);
+    const span = Math.max(1, this.viewEndNs - this.viewStartNs);
+    const { times, tids } = this.profile.samples;
+    const lo = lowerBound(times, this.viewStartNs);
+    const hi = upperBound(times, this.viewEndNs);
+    for (let i = lo; i < hi; i++) {
+      const li = tidToIdx.get(tids[i]);
+      if (li === undefined) continue;
+      const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
+      buckets[li * W + px]++;
+    }
 
-      // Find bin range that overlaps the visible window.
-      const viewW = w;
+    // Absolute density: each pixel column covers `pixelTimeNs` of wall time, and
+    // at the recorded sampling rate the maximum number of samples that could land
+    // in it is `pixelTimeNs / nsPerSample`. Cap at 1 so we use the full bar
+    // height when a thread is fully on-CPU. When zoomed in past one sample per
+    // pixel, maxPerPixel < 1, so individual samples render at full height.
+    const pixelTimeNs = span / W;
+    const nsPerSample = this.profile.nsPerSample || pixelTimeNs;
+    const maxPerPixel = pixelTimeNs / nsPerSample;
+
+    for (let li = 0; li < L; li++) {
+      const lane = this.lanes[li];
+      const y = li * LANE_H;
       const baseY = y + 3, barH = LANE_H - 6;
-      // For each pixel column, compute density by accumulating overlapping bins.
-      const pixelStep = 1;
-      // Normalize against the densest bin in the visible window so the chart
-      // uses the lane's full height as the user zooms in.
-      const visLo = Math.max(0, Math.floor((this.viewStartNs - binStart) / binSpan * N));
-      const visHi = Math.min(N, Math.ceil((this.viewEndNs - binStart) / binSpan * N));
-      let max = 1;
-      for (let i = visLo; i < visHi; i++) if (bins[i] > max) max = bins[i];
-
       ctx.fillStyle = lane.color;
-      for (let px = 0; px < viewW; px += pixelStep) {
-        const nsLo = this.viewStartNs + (px / viewW) * (this.viewEndNs - this.viewStartNs);
-        const nsHi = this.viewStartNs + ((px + pixelStep) / viewW) * (this.viewEndNs - this.viewStartNs);
-        const lo = Math.max(0, Math.floor((nsLo - binStart) / binSpan * N));
-        const hi = Math.min(N, Math.ceil((nsHi - binStart) / binSpan * N));
-        let sum = 0;
-        for (let i = lo; i < hi; i++) sum += bins[i];
-        if (sum === 0) continue;
-        const v = Math.min(1, sum / max);
+      ctx.globalAlpha = 0.85;
+      const rowOff = li * W;
+      for (let px = 0; px < W; px++) {
+        const n = buckets[rowOff + px];
+        if (n === 0) continue;
+        const v = Math.min(1, n / maxPerPixel);
         const bh = Math.max(1, v * barH);
-        ctx.globalAlpha = 0.85;
-        ctx.fillRect(px, baseY + (barH - bh), pixelStep, bh);
+        ctx.fillRect(px, baseY + (barH - bh), 1, bh);
       }
       ctx.globalAlpha = 1;
 
-      // dim if not in selectedTids
       if (this.selectedTids && !this.selectedTids.has(lane.tid)) {
         ctx.fillStyle = "rgba(20,20,24,0.55)";
         ctx.fillRect(0, y, w, LANE_H);
@@ -450,6 +430,23 @@ export class Timeline {
     if (start < this.profile.startNs) start = this.profile.startNs;
     return [start, end];
   }
+}
+
+function lowerBound(arr, v) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid] < v) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+function upperBound(arr, v) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid] <= v) lo = mid + 1; else hi = mid;
+  }
+  return lo;
 }
 
 function laneColor(i) {
