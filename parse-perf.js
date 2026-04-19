@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { stat } from "node:fs/promises";
+import path from "node:path";
 
 const PERF_BIN = process.env.PERF_BIN || "perf";
 
