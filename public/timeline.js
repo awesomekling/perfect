@@ -263,6 +263,7 @@ export class Timeline {
     if (!rect) {
       rect = document.createElement("div");
       rect.className = "selection-rect";
+      rect.innerHTML = `<div class="handle handle-left"></div><div class="handle handle-right"></div>`;
       this.overlayEl.appendChild(rect);
     }
     const x1 = this._xOfNs(this.selStartNs, w);
@@ -288,8 +289,13 @@ export class Timeline {
       }
       if (e.button !== 0) return;
       const ns = this._nsOfX(x, rect.width);
-      drag = { startX: x, startNs: ns, mode: e.shiftKey ? "extend" : "new", origStart: this.selStartNs, origEnd: this.selEndNs };
-      if (drag.mode === "new") {
+      let mode = e.shiftKey ? "extend" : "new";
+      if (e.target && e.target.classList) {
+        if (e.target.classList.contains("handle-left"))  mode = "resize-left";
+        else if (e.target.classList.contains("handle-right")) mode = "resize-right";
+      }
+      drag = { startX: x, startNs: ns, mode, origStart: this.selStartNs, origEnd: this.selEndNs };
+      if (mode === "new") {
         this.selStartNs = ns;
         this.selEndNs = ns;
       }
@@ -317,7 +323,15 @@ export class Timeline {
       if (drag.mode === "new") {
         this.selStartNs = Math.min(drag.startNs, ns);
         this.selEndNs = Math.max(drag.startNs, ns);
+      } else if (drag.mode === "resize-left") {
+        // Anchor on the original right edge; allow swap if dragged past it.
+        this.selStartNs = Math.min(drag.origEnd, ns);
+        this.selEndNs   = Math.max(drag.origEnd, ns);
+      } else if (drag.mode === "resize-right") {
+        this.selStartNs = Math.min(drag.origStart, ns);
+        this.selEndNs   = Math.max(drag.origStart, ns);
       } else {
+        // extend
         this.selStartNs = Math.min(drag.origStart, drag.origEnd, ns);
         this.selEndNs = Math.max(drag.origStart, drag.origEnd, ns);
       }
@@ -335,8 +349,8 @@ export class Timeline {
       const rect = ov.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const moved = Math.abs(x - drag.startX) > 2;
-      if (!moved) {
-        // click without drag = reset to full range
+      if (!moved && drag.mode === "new") {
+        // click on empty area = reset to full range
         this.selStartNs = this.profile.startNs;
         this.selEndNs = this.profile.endNs;
         this._drawSelection();

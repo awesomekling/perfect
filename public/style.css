@@ -173,6 +173,16 @@ button { font: inherit; color: inherit; }
   border-right: 1px solid var(--selection-stroke);
   pointer-events: none;
 }
+.selection-rect .handle {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 9px;
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+.selection-rect .handle-left  { left: -5px; }
+.selection-rect .handle-right { right: -5px; }
+.selection-rect .handle:hover { background: rgba(78, 161, 255, 0.35); }
 
 /* ---------- Splitter ---------- */
 .splitter {
