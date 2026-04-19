@@ -322,6 +322,7 @@ export class Timeline {
         this.selEndNs = Math.max(drag.origStart, drag.origEnd, ns);
       }
       this._drawSelection();
+      this._scheduleFire();
     });
 
     window.addEventListener("mouseup", (e) => {
@@ -379,6 +380,17 @@ export class Timeline {
         tids: this.selectedTids,
       });
     }
+  }
+
+  // Coalesce live-update fires during drag to one per animation frame so a
+  // slow tree rebuild doesn't queue up behind every mousemove.
+  _scheduleFire() {
+    if (this._fireScheduled) return;
+    this._fireScheduled = true;
+    requestAnimationFrame(() => {
+      this._fireScheduled = false;
+      this.fire();
+    });
   }
 
   // --- View (pan/zoom) helpers ---
