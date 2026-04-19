@@ -34,8 +34,23 @@ export class TreeView {
     this._selectedIdx = 0;     // keyboard selection (index in flatRows)
     this._selectedNodeId = null; // try to preserve selection across refreshes
 
-    this.scrollEl.addEventListener("scroll", () => this._renderVisible());
-    window.addEventListener("resize", () => this._renderVisible());
+    this._onScroll = () => this._renderVisible();
+    this._onResize = () => this._renderVisible();
+    this._attached = false;
+  }
+
+  attach() {
+    if (this._attached) return;
+    this._attached = true;
+    this.scrollEl.addEventListener("scroll", this._onScroll);
+    window.addEventListener("resize", this._onResize);
+  }
+
+  detach() {
+    if (!this._attached) return;
+    this._attached = false;
+    this.scrollEl.removeEventListener("scroll", this._onScroll);
+    window.removeEventListener("resize", this._onResize);
   }
 
   refresh() {

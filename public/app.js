@@ -1,6 +1,7 @@
 import { Profile, fmtMs, fmtTimeShort } from "./profile.js";
 import { Timeline } from "./timeline.js";
 import { TreeView } from "./treeview.js";
+import { SamplesView } from "./samplesview.js";
 
 const $ = (s) => document.querySelector(s);
 
@@ -30,12 +31,21 @@ const els = {
   autoExpand: $("#auto-expand"),
   splitter: $("#splitter"),
   timeline: $("#timeline"),
+  treeFilters: $("#tree-filters"),
+  treeHeaderTree: $("#tree-header-tree"),
+  treeHeaderSamples: $("#tree-header-samples"),
+  sampleSidebar: $("#sample-sidebar"),
 };
 
 let profile = null;
 let timeline = null;
 let treeView = null;
+let samplesView = null;
 let mode = "calltree";
+
+function activeView() {
+  return mode === "samples" ? samplesView : treeView;
+}
 
 async function listProfiles() {
   const r = await fetch("/api/profiles");
@@ -72,8 +82,14 @@ function setProfile(json, name) {
     lanesCanvas: els.lanesCanvas,
     rulerCanvas: els.rulerCanvas,
     overlayEl: els.selectionOverlay,
-    onChange: () => treeView.refresh(),
+    onChange: () => activeView() && activeView().refresh(),
     onViewChange: (isFull) => els.resetZoom.classList.toggle("hidden", isFull),
+  });
+
+  const getFilter = () => ({
+    startNs: timeline.selStartNs,
+    endNs: timeline.selEndNs,
+    tids: timeline.selectedTids,
   });
 
   treeView = new TreeView({
@@ -82,14 +98,18 @@ function setProfile(json, name) {
     treeEl: els.tree,
     statsEl: els.stats,
     getMode: () => mode,
-    getFilter: () => ({
-      startNs: timeline.selStartNs,
-      endNs: timeline.selEndNs,
-      tids: timeline.selectedTids,
-    }),
+    getFilter,
     getHideUnknown: () => els.hideUnknown.checked,
     getSearch: () => els.search.value,
     getAutoExpand: () => els.autoExpand.checked,
+  });
+  samplesView = new SamplesView({
+    profile,
+    scrollEl: els.treeScroll,
+    treeEl: els.tree,
+    statsEl: els.stats,
+    sidebarEl: els.sampleSidebar,
+    getFilter,
   });
   treeView.onMatchesChange = (cur, total) => {
     if (!els.search.value) {
@@ -107,7 +127,23 @@ function setProfile(json, name) {
     els.searchPrev.disabled = total === 0;
     els.searchNext.disabled = total === 0;
   };
-  treeView.refresh();
+  applyModeUI();
+  activeView().refresh();
+}
+
+function applyModeUI() {
+  const samples = mode === "samples";
+  els.treeFilters.classList.toggle("hidden", samples);
+  els.treeHeaderTree.classList.toggle("hidden", samples);
+  els.treeHeaderSamples.classList.toggle("hidden", !samples);
+  els.sampleSidebar.classList.toggle("hidden", !samples);
+  // Both views share the same scroll element. Detach the inactive one so its
+  // scroll handler can't trample the active one's rendering.
+  if (samples) { treeView.detach(); samplesView.attach(); }
+  else         { samplesView.detach(); treeView.attach(); }
+  els.tree.innerHTML = "";
+  els.tree.style.height = "0px";
+  els.treeScroll.scrollTop = 0;
 }
 
 function showLoading(text) {
@@ -124,7 +160,9 @@ for (const tab of document.querySelectorAll(".tab")) {
     for (const t of document.querySelectorAll(".tab")) t.classList.remove("active");
     tab.classList.add("active");
     mode = tab.dataset.mode;
-    if (treeView) treeView.refresh();
+    if (!treeView) return;
+    applyModeUI();
+    activeView().refresh();
   });
 }
 
@@ -166,18 +204,20 @@ window.addEventListener("keydown", (e) => {
   const t = e.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const view = activeView();
+  const endIdx = mode === "samples" ? samplesView.samples.length - 1 : treeView.flatRows.length - 1;
   switch (e.key) {
-    case "ArrowDown":  e.preventDefault(); treeView.moveSelection(1); break;
-    case "ArrowUp":    e.preventDefault(); treeView.moveSelection(-1); break;
-    case "ArrowLeft":  e.preventDefault(); treeView.collapseOrParent(); break;
-    case "ArrowRight": e.preventDefault(); treeView.expandOrChild(); break;
-    case "PageDown":   e.preventDefault(); treeView.movePage(1); break;
-    case "PageUp":     e.preventDefault(); treeView.movePage(-1); break;
-    case "Home":       e.preventDefault(); treeView.selectAt(0); break;
-    case "End":        e.preventDefault(); treeView.selectAt(treeView.flatRows.length - 1); break;
+    case "ArrowDown":  e.preventDefault(); view.moveSelection(1); break;
+    case "ArrowUp":    e.preventDefault(); view.moveSelection(-1); break;
+    case "ArrowLeft":  e.preventDefault(); view.collapseOrParent(); break;
+    case "ArrowRight": e.preventDefault(); view.expandOrChild(); break;
+    case "PageDown":   e.preventDefault(); view.movePage(1); break;
+    case "PageUp":     e.preventDefault(); view.movePage(-1); break;
+    case "Home":       e.preventDefault(); view.selectAt(0); break;
+    case "End":        e.preventDefault(); view.selectAt(endIdx); break;
     case "Enter":
-    case " ":          e.preventDefault(); treeView.toggleSelected(); break;
-    case "/":          e.preventDefault(); els.search.focus(); els.search.select(); break;
+    case " ":          e.preventDefault(); view.toggleSelected(); break;
+    case "/":          if (mode !== "samples") { e.preventDefault(); els.search.focus(); els.search.select(); } break;
     case "0":          if (timeline) { e.preventDefault(); timeline.resetView(); } break;
     case "+":
     case "=":          if (timeline) { e.preventDefault(); zoomCentered(0.5); } break;

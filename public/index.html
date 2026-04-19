@@ -46,8 +46,9 @@
             <button class="tab active" data-mode="calltree">Call Tree</button>
             <button class="tab" data-mode="inverted">Inverted</button>
             <button class="tab" data-mode="top">Top Functions</button>
+            <button class="tab" data-mode="samples">Samples</button>
           </div>
-          <div class="filters">
+          <div class="filters" id="tree-filters">
             <label class="filter"><input type="checkbox" id="hide-unknown" checked> Hide [unknown] kernel frames</label>
             <div class="search-group">
               <input type="text" id="search" placeholder="Search symbols…">
@@ -59,14 +60,23 @@
           </div>
           <div class="stats" id="stats"></div>
         </div>
-        <div class="tree-header">
+        <div class="tree-header" id="tree-header-tree">
           <div class="col-symbol">Symbol</div>
           <div class="col-total" id="th-total" title="Cumulative time spent in this function (including children)">Total</div>
           <div class="col-self" id="th-self" title="Time spent directly in this function (excluding children)">Self</div>
           <div class="col-dso">Module</div>
         </div>
-        <div class="tree-scroll" id="tree-scroll">
-          <div class="tree" id="tree"></div>
+        <div class="tree-header hidden" id="tree-header-samples">
+          <div class="col-time">Time</div>
+          <div class="col-thread">Thread</div>
+          <div class="col-symbol">Leaf function</div>
+          <div class="col-dso">Module</div>
+        </div>
+        <div class="bottom-body">
+          <div class="tree-scroll" id="tree-scroll">
+            <div class="tree" id="tree"></div>
+          </div>
+          <aside class="sample-sidebar hidden" id="sample-sidebar"></aside>
         </div>
       </section>
     </main>
