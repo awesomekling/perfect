@@ -1,23 +1,26 @@
 // Canvas timeline. Per-thread lane shows sample density over the visible time range.
 // Click+drag on the canvas to select a time range.
+// Wheel pans, Ctrl/Cmd+wheel zooms around the cursor.
 
 import { fmtMs } from "./profile.js";
 
 const LANE_H = 26;
+const MIN_VIEW_NS = 1000; // 1 µs floor on zoom
 
 export class Timeline {
-  constructor({ profile, laneLabelsEl, lanesCanvas, rulerCanvas, overlayEl, onChange }) {
+  constructor({ profile, laneLabelsEl, lanesCanvas, rulerCanvas, overlayEl, onChange, onViewChange }) {
     this.profile = profile;
     this.laneLabelsEl = laneLabelsEl;
     this.lanesCanvas = lanesCanvas;
     this.rulerCanvas = rulerCanvas;
     this.overlayEl = overlayEl;
     this.onChange = onChange;
+    this.onViewChange = onViewChange;
 
     // selection in absolute ns
     this.selStartNs = profile.startNs;
     this.selEndNs = profile.endNs;
-    // visible window (for zoom later — for now = full range)
+    // visible window in absolute ns
     this.viewStartNs = profile.startNs;
     this.viewEndNs = profile.endNs;
 
@@ -139,6 +142,7 @@ export class Timeline {
     this._drawRuler();
     this._drawLanes();
     this._drawSelection();
+    if (this.onViewChange) this.onViewChange(this.isFullView());
   }
 
   _xOfNs(ns, w) {
@@ -161,10 +165,11 @@ export class Timeline {
     ctx.fillStyle = "#9a9aa2";
     ctx.font = '11px "JetBrains Mono", ui-monospace, Menlo, monospace';
     ctx.textBaseline = "middle";
-    const span = this.viewEndNs - this.viewStartNs;
-    const ticks = pickTicks(span, w);
+    const t0 = this.viewStartNs - this.profile.startNs;
+    const t1 = this.viewEndNs - this.profile.startNs;
+    const ticks = pickTicks(t0, t1, w);
     for (const tn of ticks) {
-      const x = this._xOfNs(this.viewStartNs + tn, w);
+      const x = this._xOfNs(this.profile.startNs + tn, w);
       ctx.strokeStyle = "#3a3a42";
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
@@ -187,11 +192,12 @@ export class Timeline {
     ctx.fillRect(0, 0, w, h);
 
     // Tick lines
-    const span = this.viewEndNs - this.viewStartNs;
-    const ticks = pickTicks(span, w);
+    const t0 = this.viewStartNs - this.profile.startNs;
+    const t1 = this.viewEndNs - this.profile.startNs;
+    const ticks = pickTicks(t0, t1, w);
     ctx.strokeStyle = "#2a2a32";
     for (const tn of ticks) {
-      const x = this._xOfNs(this.viewStartNs + tn, w);
+      const x = this._xOfNs(this.profile.startNs + tn, w);
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
       ctx.lineTo(x + 0.5, h);
@@ -220,9 +226,12 @@ export class Timeline {
       const baseY = y + 3, barH = LANE_H - 6;
       // For each pixel column, compute density by accumulating overlapping bins.
       const pixelStep = 1;
-      // Map pixel x -> ns
+      // Normalize against the densest bin in the visible window so the chart
+      // uses the lane's full height as the user zooms in.
+      const visLo = Math.max(0, Math.floor((this.viewStartNs - binStart) / binSpan * N));
+      const visHi = Math.min(N, Math.ceil((this.viewEndNs - binStart) / binSpan * N));
       let max = 1;
-      for (let i = 0; i < N; i++) if (bins[i] > max) max = bins[i];
+      for (let i = visLo; i < visHi; i++) if (bins[i] > max) max = bins[i];
 
       ctx.fillStyle = lane.color;
       for (let px = 0; px < viewW; px += pixelStep) {
@@ -263,12 +272,21 @@ export class Timeline {
   }
 
   _installInput() {
-    let drag = null;
+    let drag = null;     // selection drag (left button)
+    let panDrag = null;  // pan drag (middle button)
     const ov = this.overlayEl;
+
     ov.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return;
       const rect = ov.getBoundingClientRect();
       const x = e.clientX - rect.left;
+      if (e.button === 1) {
+        // Middle-button drag = pan.
+        panDrag = { startX: x, startView: this.viewStartNs, endView: this.viewEndNs };
+        ov.style.cursor = "grabbing";
+        e.preventDefault();
+        return;
+      }
+      if (e.button !== 0) return;
       const ns = this._nsOfX(x, rect.width);
       drag = { startX: x, startNs: ns, mode: e.shiftKey ? "extend" : "new", origStart: this.selStartNs, origEnd: this.selEndNs };
       if (drag.mode === "new") {
@@ -278,10 +296,23 @@ export class Timeline {
       this._drawSelection();
       e.preventDefault();
     });
+
     window.addEventListener("mousemove", (e) => {
-      if (!drag) return;
       const rect = ov.getBoundingClientRect();
       const x = e.clientX - rect.left;
+      if (panDrag) {
+        const span = panDrag.endView - panDrag.startView;
+        const dxPx = x - panDrag.startX;
+        const dxNs = -(dxPx / rect.width) * span;
+        let s = panDrag.startView + dxNs;
+        let f = panDrag.endView + dxNs;
+        [s, f] = this._clampWindow(s, f);
+        this.viewStartNs = s;
+        this.viewEndNs = f;
+        this.draw();
+        return;
+      }
+      if (!drag) return;
       const ns = this._nsOfX(x, rect.width);
       if (drag.mode === "new") {
         this.selStartNs = Math.min(drag.startNs, ns);
@@ -292,7 +323,13 @@ export class Timeline {
       }
       this._drawSelection();
     });
+
     window.addEventListener("mouseup", (e) => {
+      if (panDrag) {
+        panDrag = null;
+        ov.style.cursor = "";
+        return;
+      }
       if (!drag) return;
       const rect = ov.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -306,6 +343,31 @@ export class Timeline {
       drag = null;
       this.fire();
     });
+
+    // Wheel: pan horizontally; Ctrl/Cmd-wheel (also trackpad pinch) zooms around cursor.
+    const onWheel = (target) => (e) => {
+      e.preventDefault();
+      const rect = target.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      if (e.ctrlKey || e.metaKey) {
+        const anchorNs = this._nsOfX(x, rect.width);
+        const factor = Math.exp(e.deltaY * 0.0025);
+        this.zoom(factor, anchorNs);
+      } else {
+        const dx = e.shiftKey ? e.deltaY : (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY);
+        const span = this.viewEndNs - this.viewStartNs;
+        this.pan((dx / rect.width) * span);
+      }
+    };
+    ov.addEventListener("wheel", onWheel(ov), { passive: false });
+    this.rulerCanvas.addEventListener("wheel", onWheel(this.rulerCanvas), { passive: false });
+
+    // Double-click empty area = reset zoom to full.
+    ov.addEventListener("dblclick", (e) => {
+      if (e.button !== 0) return;
+      this.resetView();
+    });
+
     window.addEventListener("resize", () => this.resize());
   }
 
@@ -318,6 +380,50 @@ export class Timeline {
       });
     }
   }
+
+  // --- View (pan/zoom) helpers ---
+
+  isFullView() {
+    return this.viewStartNs === this.profile.startNs && this.viewEndNs === this.profile.endNs;
+  }
+
+  resetView() {
+    this.viewStartNs = this.profile.startNs;
+    this.viewEndNs = this.profile.endNs;
+    this.draw();
+  }
+
+  // Zoom by `factor` (>1 = zoom out, <1 = zoom in), keeping `anchorNs` fixed.
+  zoom(factor, anchorNs) {
+    const span = this.viewEndNs - this.viewStartNs;
+    const fullSpan = this.profile.endNs - this.profile.startNs;
+    let newSpan = Math.max(MIN_VIEW_NS, Math.min(fullSpan, span * factor));
+    const ratio = (anchorNs - this.viewStartNs) / span;
+    let newStart = anchorNs - ratio * newSpan;
+    let newEnd = newStart + newSpan;
+    [newStart, newEnd] = this._clampWindow(newStart, newEnd);
+    this.viewStartNs = newStart;
+    this.viewEndNs = newEnd;
+    this.draw();
+  }
+
+  // Shift the view by `dxNs`, clamped to profile bounds.
+  pan(dxNs) {
+    let newStart = this.viewStartNs + dxNs;
+    let newEnd = this.viewEndNs + dxNs;
+    [newStart, newEnd] = this._clampWindow(newStart, newEnd);
+    this.viewStartNs = newStart;
+    this.viewEndNs = newEnd;
+    this.draw();
+  }
+
+  _clampWindow(start, end) {
+    const span = end - start;
+    if (start < this.profile.startNs) { start = this.profile.startNs; end = start + span; }
+    if (end > this.profile.endNs)     { end   = this.profile.endNs;   start = end - span; }
+    if (start < this.profile.startNs) start = this.profile.startNs;
+    return [start, end];
+  }
 }
 
 function laneColor(i) {
@@ -329,20 +435,22 @@ function laneColor(i) {
   return palette[i % palette.length];
 }
 
-function pickTicks(spanNs, pixelW) {
+function pickTicks(t0, t1, pixelW) {
   // Aim for one label every ~110 pixels (so labels don't overlap).
+  const span = t1 - t0;
   const target = Math.max(2, Math.floor(pixelW / 110));
-  const rawStep = spanNs / target;
+  const rawStep = span / target;
   // Pick a "nice" step >= rawStep from {1,2,5} * 10^k (in ns).
   const exp = Math.floor(Math.log10(Math.max(1, rawStep)));
   let step = 1;
-  outer: for (let e = exp; e <= exp + 2; e++) {
+  outer: for (let e = exp; e <= exp + 3; e++) {
     for (const m of [1, 2, 5]) {
       const s = m * Math.pow(10, e);
       if (s >= rawStep) { step = s; break outer; }
     }
   }
+  const first = Math.ceil(t0 / step) * step;
   const out = [];
-  for (let t = 0; t <= spanNs; t += step) out.push(t);
+  for (let t = first; t <= t1; t += step) out.push(t);
   return out;
 }

@@ -18,6 +18,7 @@ const els = {
   lanesCanvas: $("#lanes-canvas"),
   rulerCanvas: $("#ruler-canvas"),
   selectionOverlay: $("#selection-overlay"),
+  resetZoom: $("#reset-zoom"),
   treeScroll: $("#tree-scroll"),
   tree: $("#tree"),
   stats: $("#stats"),
@@ -72,6 +73,7 @@ function setProfile(json, name) {
     rulerCanvas: els.rulerCanvas,
     overlayEl: els.selectionOverlay,
     onChange: () => treeView.refresh(),
+    onViewChange: (isFull) => els.resetZoom.classList.toggle("hidden", isFull),
   });
 
   treeView = new TreeView({
@@ -176,8 +178,20 @@ window.addEventListener("keydown", (e) => {
     case "Enter":
     case " ":          e.preventDefault(); treeView.toggleSelected(); break;
     case "/":          e.preventDefault(); els.search.focus(); els.search.select(); break;
+    case "0":          if (timeline) { e.preventDefault(); timeline.resetView(); } break;
+    case "+":
+    case "=":          if (timeline) { e.preventDefault(); zoomCentered(0.5); } break;
+    case "-":
+    case "_":          if (timeline) { e.preventDefault(); zoomCentered(2); } break;
   }
 });
+
+function zoomCentered(factor) {
+  const center = (timeline.viewStartNs + timeline.viewEndNs) / 2;
+  timeline.zoom(factor, center);
+}
+
+els.resetZoom.addEventListener("click", () => timeline && timeline.resetView());
 
 // ----- File picker / drag-drop -----
 els.openBtn.addEventListener("click", () => els.fileInput.click());
