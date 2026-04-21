@@ -472,10 +472,6 @@ export class TreeView {
         : `${node.self.toLocaleString()} samples (${selfPct.toFixed(2)}%)`;
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
-          <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
-            <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
-            <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
-          </div>
           <div class="col-total" title="${totalTip}">
             <span class="bar" style="width:${pct.toFixed(2)}%"></span>
             <span class="num">${totalTxt} <span class="pct">${pct.toFixed(1)}%</span></span>
@@ -483,6 +479,10 @@ export class TreeView {
           <div class="col-self" title="${selfTip}">
             <span class="bar" style="width:${selfPct.toFixed(2)}%"></span>
             <span class="num">${selfTxt}${node.self > 0 ? ` <span class="pct">${selfPct.toFixed(1)}%</span>` : ""}</span>
+          </div>
+          <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
+            <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
+            <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
           </div>
           <div class="col-dso" title="${escapeHtml(profile.funcDso(fid))}">${escapeHtml(dso)}</div>
         </div>
