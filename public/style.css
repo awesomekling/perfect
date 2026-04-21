@@ -124,16 +124,15 @@ button { font: inherit; color: inherit; }
   display: flex;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-items: flex-start;
 }
 .lane-labels {
   width: 220px;
   flex: 0 0 auto;
   border-right: 1px solid var(--border);
-  overflow-y: auto;
-  overflow-x: hidden;
 }
-.lane-labels::-webkit-scrollbar { width: 0; }
 .lane-row {
   display: flex;
   align-items: center;
