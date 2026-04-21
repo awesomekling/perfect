@@ -133,7 +133,7 @@ export class TreeView {
       const walk = inverted
         ? (cb) => { for (let j = off; j < end; j++) cb(j); }
         : (cb) => { for (let j = end - 1; j >= off; j--) cb(j); };
-      let lastChild = null;
+      let firstChild = null, lastChild = null;
       walk((j) => {
         const fid = stackFrames[j];
         if (hideUnknown && profile.isUnknown(fid)) return;
@@ -144,9 +144,15 @@ export class TreeView {
         }
         child.total++;
         cur = child;
+        if (!firstChild) firstChild = child;
         lastChild = child;
       });
-      if (lastChild) lastChild.self++;
+      // Self time belongs on the sample's leaf frame. In the tree, the leaf is
+      // the last child for calltree (walked outer→inner) and the first child
+      // for inverted (walked inner→outer, so the innermost/leaf is reached
+      // first).
+      const leafNode = inverted ? firstChild : lastChild;
+      if (leafNode) leafNode.self++;
     }
     return root;
   }
