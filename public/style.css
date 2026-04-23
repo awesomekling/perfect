@@ -433,6 +433,7 @@ button { font: inherit; color: inherit; }
   flex: 1;
 }
 .tree-row .sym.unknown { color: var(--text-dim); font-style: italic; }
+.tree-row .sym.truncated { color: var(--warn); font-style: italic; }
 .tree-row .sym mark {
   background: #ffd24e44;
   color: var(--text);

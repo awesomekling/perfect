@@ -10,6 +10,15 @@ import { fmtMs, fmtCount, fmtPct, fmtTimeShort } from "./profile.js";
 
 const ROW_H = 22;
 
+// Synthetic fid used in the inverted tree to represent samples whose stack
+// was truncated at a given node (i.e. perf couldn't unwind any further). The
+// renderer special-cases this value to show "[truncated]" instead of looking
+// up a real function.
+const TRUNCATED_FID = -2;
+// Only attach a [truncated] child when the gap is at least this fraction of
+// the node's total — below that, it's just noise.
+const TRUNCATION_THRESHOLD = 0.05;
+
 export class TreeView {
   constructor({ profile, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand }) {
     this.profile = profile;
@@ -88,7 +97,9 @@ export class TreeView {
       // a clear majority of its parent's samples.
       let cur = root;
       for (let depth = 0; depth < 64; depth++) {
-        const kids = sortChildren(cur);
+        // Skip the synthetic [truncated] child — it's a dead end for the hot
+        // path, and following it would block descent through real callers.
+        const kids = sortChildren(cur).filter((k) => k.fid !== TRUNCATED_FID);
         if (kids.length === 0) break;
         const top = kids[0];
         // Expand if top child dominates its siblings (>=2x next child) OR is >40% of parent total.
@@ -154,7 +165,36 @@ export class TreeView {
       const leafNode = inverted ? firstChild : lastChild;
       if (leafNode) leafNode.self++;
     }
+    if (inverted) this._attachTruncation(root, TRUNCATION_THRESHOLD);
     return root;
+  }
+
+  // Walk the tree and, for any node whose children's totals don't add up to
+  // its own, add a synthetic [truncated] child representing the gap. In the
+  // inverted view, the gap = samples where perf couldn't unwind past this
+  // frame, which otherwise shows up as "memcpy has 200ms self but its
+  // callers only sum to 10ms" — surfacing it makes the missing time obvious.
+  _attachTruncation(node, threshold) {
+    if (node.fid !== -1) {
+      let sum = 0;
+      for (const c of node.children.values()) sum += c.total;
+      const gap = node.total - sum;
+      if (gap > 0 && gap >= node.total * threshold) {
+        const t = this._newNode(TRUNCATED_FID);
+        t.total = gap;
+        node.children.set(TRUNCATED_FID, t);
+      }
+    }
+    // Snapshot before recursing, since we may have just mutated the map.
+    const kids = [...node.children.values()];
+    for (const c of kids) {
+      if (c.fid !== TRUNCATED_FID) this._attachTruncation(c, threshold);
+    }
+  }
+
+  _labelFor(fid) {
+    if (fid === TRUNCATED_FID) return "[truncated]";
+    return this.profile.funcLabel(fid);
   }
 
   _buildTopFunctions(sampleIdxs, hideUnknown) {
@@ -261,7 +301,7 @@ export class TreeView {
     const profile = this.profile;
     this._searchExpanded = new Set();
 
-    const matches = search ? (fid) => profile.funcLabel(fid).toLowerCase().includes(search) : null;
+    const matches = search ? (fid) => this._labelFor(fid).toLowerCase().includes(search) : null;
 
     // If auto-expand is on with a search, walk the tree once and flag every
     // ancestor of any matching node so its descendant becomes reachable.
@@ -446,9 +486,11 @@ export class TreeView {
       const { node, depth, isMatch } = this.flatRows[i];
       const top = i * ROW_H;
       const fid = node.fid;
-      const label = profile.funcLabel(fid);
-      const dso = profile.funcDsoShort(fid);
-      const isUnknown = profile.isUnknown(fid);
+      const isTruncated = fid === TRUNCATED_FID;
+      const label = isTruncated ? "[truncated]" : profile.funcLabel(fid);
+      const dso = isTruncated ? "" : profile.funcDsoShort(fid);
+      const dsoFull = isTruncated ? "perf could not unwind past this frame" : profile.funcDso(fid);
+      const isUnknown = !isTruncated && profile.isUnknown(fid);
       const expandable = node.children.size > 0 || node._lazy;
       const expanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
       const twisty = expandable ? (expanded ? "▾" : "▸") : "·";
@@ -482,9 +524,9 @@ export class TreeView {
           </div>
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
-            <span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
+            <span class="sym ${isUnknown ? "unknown" : ""} ${isTruncated ? "truncated" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
           </div>
-          <div class="col-dso" title="${escapeHtml(profile.funcDso(fid))}">${escapeHtml(dso)}</div>
+          <div class="col-dso" title="${escapeHtml(dsoFull)}">${escapeHtml(dso)}</div>
         </div>
       `;
     }
