@@ -48,6 +48,12 @@ export class TreeView {
     // refresh() silently clears it.
     this._focusPath = [];
     this.onFocusChange = null; // (crumbs) => void, where crumb = {fid,label,total,pct,depth}
+    // Hover bridge to the timeline: fires `(fidChain | null)` a short time
+    // after the mouse settles on a row. Debounced so scrubbing across rows
+    // doesn't burn CPU scanning samples we'll never paint.
+    this.onHoverChange = null;
+    this._hoverTimer = null;
+    this._pendingHoverIdx = null;
 
     this._onScroll = () => this._renderVisible();
     this._onResize = () => this._renderVisible();
@@ -251,30 +257,37 @@ export class TreeView {
   // whatever extra fids sit between the focused frame (depth 0 in the
   // rendered tree) and the row. With no prior focus, the row's full chain
   // becomes the new path.
-  focusSelected() {
-    const r = this.flatRows[this._selectedIdx];
-    if (!r || !r.node) return;
-    const node = r.node;
-    if (node.fid === TRUNCATED_FID) return;
-    const chain = [node.fid];
+  // Compute the full fid-chain (outer→inner, including any existing focus
+  // prefix) that corresponds to the row at `flatRows[i]`. Returns null if
+  // the row or any ancestor is synthetic ([truncated]).
+  _fullChainForRow(i) {
+    const r = this.flatRows[i];
+    if (!r || !r.node) return null;
+    if (r.node.fid === TRUNCATED_FID) return null;
+    const tail = [r.node.fid];
     let needed = r.depth - 1;
-    for (let i = this._selectedIdx - 1; i >= 0 && needed >= 0; i--) {
-      if (this.flatRows[i].depth === needed) {
-        const n = this.flatRows[i].node;
-        if (n.fid === TRUNCATED_FID) return;
-        chain.unshift(n.fid);
+    for (let j = i - 1; j >= 0 && needed >= 0; j--) {
+      if (this.flatRows[j].depth === needed) {
+        const n = this.flatRows[j].node;
+        if (n.fid === TRUNCATED_FID) return null;
+        tail.unshift(n.fid);
         needed--;
       }
     }
     if (this._focusPath.length > 0) {
-      // chain[0] is the already-focused frame (depth 0 in the focused tree);
-      // only the frames deeper than it extend the filter. If the user pressed
-      // F on depth 0 itself, chain.slice(1) is empty → silent no-op.
-      if (chain.length <= 1) return;
-      this._focusPath = [...this._focusPath, ...chain.slice(1)];
-    } else {
-      this._focusPath = chain;
+      // tail[0] is the already-focused frame (depth 0 in the focused tree);
+      // only deeper frames extend the chain.
+      return [...this._focusPath, ...tail.slice(1)];
     }
+    return tail;
+  }
+
+  focusSelected() {
+    const chain = this._fullChainForRow(this._selectedIdx);
+    if (!chain) return;
+    // No change if the selected row *is* the already-focused frame.
+    if (chain.length === this._focusPath.length) return;
+    this._focusPath = chain;
     this._selectedNodeId = null;
     this._selectedIdx = 0;
     if (this.scrollEl) this.scrollEl.scrollTop = 0;
@@ -300,6 +313,19 @@ export class TreeView {
       });
     }
     return out;
+  }
+
+  // Debounced hover notifier. `idx` is a row index, or null to clear.
+  _setHoverRow(idx) {
+    this._pendingHoverIdx = idx;
+    if (this._hoverTimer) clearTimeout(this._hoverTimer);
+    this._hoverTimer = setTimeout(() => {
+      this._hoverTimer = null;
+      if (!this.onHoverChange) return;
+      const i = this._pendingHoverIdx;
+      const chain = (i == null) ? null : this._fullChainForRow(i);
+      this.onHoverChange(chain);
+    }, 75);
   }
 
   _buildTopFunctions(sampleIdxs, hideUnknown) {
@@ -659,7 +685,7 @@ export class TreeView {
     }
     this.treeEl.innerHTML = html;
 
-    // attach click handlers
+    // attach click / hover handlers
     for (const row of this.treeEl.children) {
       const i = +row.dataset.i;
       row.addEventListener("click", (e) => {
@@ -682,6 +708,14 @@ export class TreeView {
         }
         this._renderVisible();
       });
+      row.addEventListener("mouseenter", () => this._setHoverRow(i));
+    }
+    // Bind mouseleave on the container once, not per row, so fast scrubs
+    // don't thrash with enter/leave pairs. Attaching it here is fine because
+    // innerHTML replacement doesn't touch the parent element itself.
+    if (!this.treeEl._hoverLeaveBound) {
+      this.treeEl._hoverLeaveBound = true;
+      this.treeEl.addEventListener("mouseleave", () => this._setHoverRow(null));
     }
   }
 }

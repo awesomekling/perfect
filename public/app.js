@@ -18,6 +18,7 @@ const els = {
   laneLabels: $("#lane-labels"),
   lanesCanvas: $("#lanes-canvas"),
   rulerCanvas: $("#ruler-canvas"),
+  highlightCanvas: $("#highlight-canvas"),
   selectionOverlay: $("#selection-overlay"),
   resetZoom: $("#reset-zoom"),
   treeScroll: $("#tree-scroll"),
@@ -82,6 +83,7 @@ function setProfile(json, name) {
     laneLabelsEl: els.laneLabels,
     lanesCanvas: els.lanesCanvas,
     rulerCanvas: els.rulerCanvas,
+    highlightCanvas: els.highlightCanvas,
     overlayEl: els.selectionOverlay,
     onChange: () => activeView() && activeView().refresh(),
     onViewChange: (isFull) => els.resetZoom.classList.toggle("hidden", isFull),
@@ -114,6 +116,7 @@ function setProfile(json, name) {
     getFocusPath: () => (treeView ? treeView._focusPath : []),
   });
   treeView.onFocusChange = renderFocusBreadcrumbs;
+  treeView.onHoverChange = (chain) => timeline && timeline.setHoverChain(chain);
   treeView.onMatchesChange = (cur, total) => {
     if (!els.search.value) {
       els.searchCount.textContent = "";
@@ -168,6 +171,8 @@ function applyModeUI() {
   // Breadcrumb is only meaningful for tree views. Hide now; the subsequent
   // tree refresh (if any) will re-show it if a focus is active.
   if (samples) els.focusBreadcrumbs.classList.add("hidden");
+  // Hover highlight is driven by the tree; clear it when leaving tree modes.
+  if (samples && timeline) timeline.setHoverChain(null);
   // Both views share the same scroll element. Detach the inactive one so its
   // scroll handler can't trample the active one's rendering.
   if (samples) { treeView.detach(); samplesView.attach(); }

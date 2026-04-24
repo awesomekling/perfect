@@ -8,14 +8,19 @@ const LANE_H = 26;
 const MIN_VIEW_NS = 1000; // 1 µs floor on zoom
 
 export class Timeline {
-  constructor({ profile, laneLabelsEl, lanesCanvas, rulerCanvas, overlayEl, onChange, onViewChange }) {
+  constructor({ profile, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, onChange, onViewChange }) {
     this.profile = profile;
     this.laneLabelsEl = laneLabelsEl;
     this.lanesCanvas = lanesCanvas;
     this.rulerCanvas = rulerCanvas;
+    this.highlightCanvas = highlightCanvas || null;
     this.overlayEl = overlayEl;
     this.onChange = onChange;
     this.onViewChange = onViewChange;
+    // fid-chain currently being hovered in the tree, or null. Persisted so
+    // the highlight redraws correctly on zoom/pan/resize without the tree
+    // having to re-send it.
+    this._hoverChain = null;
 
     // selection in absolute ns
     this.selStartNs = profile.startNs;
@@ -103,6 +108,12 @@ export class Timeline {
     this.lanesCanvas.height = h * dpr;
     this.lanesCanvas.style.width = w + "px";
     this.lanesCanvas.style.height = h + "px";
+    if (this.highlightCanvas) {
+      this.highlightCanvas.width = w * dpr;
+      this.highlightCanvas.height = h * dpr;
+      this.highlightCanvas.style.width = w + "px";
+      this.highlightCanvas.style.height = h + "px";
+    }
 
     const rw = this.rulerCanvas.parentElement.clientWidth;
     this.rulerCanvas.width = rw * dpr;
@@ -116,8 +127,78 @@ export class Timeline {
   draw() {
     this._drawRuler();
     this._drawLanes();
+    this._drawHighlight();
     this._drawSelection();
     if (this.onViewChange) this.onViewChange(this.isFullView());
+  }
+
+  // Called from the tree view on hover (debounced). `chain` is a fid array
+  // in outer→inner order, or null to clear.
+  setHoverChain(chain) {
+    this._hoverChain = (chain && chain.length > 0) ? chain : null;
+    this._drawHighlight();
+  }
+
+  _drawHighlight() {
+    if (!this.highlightCanvas) return;
+    const c = this.highlightCanvas;
+    const ctx = c.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = c.width / dpr, h = c.height / dpr;
+    ctx.clearRect(0, 0, w, h);
+    const chain = this._hoverChain;
+    if (!chain || chain.length === 0) return;
+
+    const W = Math.max(1, Math.floor(w));
+    const L = this.lanes.length;
+    const tidToIdx = new Map();
+    this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
+    const buckets = new Uint32Array(W * L);
+    const span = Math.max(1, this.viewEndNs - this.viewStartNs);
+    const { times, tids, stackOffsets, stackFrames } = this.profile.samples;
+    const lo = lowerBound(times, this.viewStartNs);
+    const hi = upperBound(times, this.viewEndNs);
+    const K = chain.length;
+    for (let i = lo; i < hi; i++) {
+      const li = tidToIdx.get(tids[i]);
+      if (li === undefined) continue;
+      // Same contiguous-chain match the tree views use. Chain is outer→inner,
+      // the stack array is inner→outer, hence the reversed comparison.
+      const off = stackOffsets[i];
+      const end = stackOffsets[i + 1];
+      let matched = false;
+      outer: for (let j = off; j + K <= end; j++) {
+        for (let k = 0; k < K; k++) {
+          if (stackFrames[j + k] !== chain[K - 1 - k]) continue outer;
+        }
+        matched = true;
+        break;
+      }
+      if (!matched) continue;
+      const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
+      buckets[li * W + px]++;
+    }
+
+    // Match the density scaling of _drawLanes so highlight bar heights mean
+    // the same thing as the base lane bars.
+    const pixelTimeNs = span / W;
+    const nsPerSample = this.profile.nsPerSample || pixelTimeNs;
+    const maxPerPixel = pixelTimeNs / nsPerSample;
+
+    ctx.fillStyle = "#ffd24e";
+    for (let li = 0; li < L; li++) {
+      const y = li * LANE_H;
+      const baseY = y + 3, barH = LANE_H - 6;
+      const rowOff = li * W;
+      for (let px = 0; px < W; px++) {
+        const n = buckets[rowOff + px];
+        if (n === 0) continue;
+        const v = Math.min(1, n / maxPerPixel);
+        const bh = Math.max(1, v * barH);
+        ctx.fillRect(px, baseY + (barH - bh), 1, bh);
+      }
+    }
   }
 
   _xOfNs(ns, w) {
