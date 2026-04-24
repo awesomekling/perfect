@@ -42,6 +42,12 @@ export class TreeView {
     this.onMatchesChange = null; // (cur, total) => void
     this._selectedIdx = 0;     // keyboard selection (index in flatRows)
     this._selectedNodeId = null; // try to preserve selection across refreshes
+    // Focus-on-subtree: fid-chain from this.tree down to the focused node.
+    // Stored as fids (not node ids) so it survives tree rebuilds; if the new
+    // tree doesn't contain the same path (e.g. filter excluded those samples),
+    // refresh() silently clears it.
+    this._focusPath = [];
+    this.onFocusChange = null; // (crumbs) => void, where crumb = {fid,label,total,pct,depth}
 
     this._onScroll = () => this._renderVisible();
     this._onResize = () => this._renderVisible();
@@ -117,6 +123,7 @@ export class TreeView {
     this._buildFlatRows();
     this._renderVisible();
     this._renderStats(performance.now() - t0);
+    if (this.onFocusChange) this.onFocusChange(this._focusBreadcrumbs());
   }
 
   _renderStats(buildMs) {
@@ -133,9 +140,22 @@ export class TreeView {
     const root = this._newNode(-1);
     const { stackOffsets, stackFrames } = this.profile.samples;
     const profile = this.profile;
+    const hasFocus = this._focusPath.length > 0;
     for (const i of sampleIdxs) {
-      const off = stackOffsets[i];
-      const end = stackOffsets[i + 1];
+      const sampleOff = stackOffsets[i];
+      const sampleEnd = stackOffsets[i + 1];
+      let off = sampleOff, end = sampleEnd;
+      if (hasFocus) {
+        // Require the focus chain to appear in the stack, then reshape the
+        // sample universe: treat the focused frame as the new outermost root
+        // of every matching sample, dropping everything above it. The walk
+        // direction still differs per mode (calltree=outer→inner,
+        // inverted=inner→outer), but both operate on the same trimmed range.
+        const focusedJ = this._findFocusJ(stackFrames, sampleOff, sampleEnd);
+        if (focusedJ < 0) continue;
+        off = sampleOff;
+        end = focusedJ + 1;
+      }
       let cur = root;
       root.total++;
       // walk frames in display order:
@@ -169,13 +189,35 @@ export class TreeView {
     return root;
   }
 
+  // Find the innermost position `j` in `stack[off..end)` such that, starting
+  // from `j`, the stack (inner→outer) matches `_focusPath` reversed. Returns
+  // `j` (the focused frame's index) or -1 if the chain isn't present.
+  // `_focusPath` is stored in outer→inner order (same as call-stack notation),
+  // while the stack array is inner→outer, hence the reversed comparison.
+  _findFocusJ(stackFrames, off, end) {
+    const path = this._focusPath;
+    const K = path.length;
+    outer: for (let j = off; j + K <= end; j++) {
+      for (let k = 0; k < K; k++) {
+        if (stackFrames[j + k] !== path[K - 1 - k]) continue outer;
+      }
+      return j;
+    }
+    return -1;
+  }
+
   // Walk the tree and, for any node whose children's totals don't add up to
   // its own, add a synthetic [truncated] child representing the gap. In the
   // inverted view, the gap = samples where perf couldn't unwind past this
   // frame, which otherwise shows up as "memcpy has 200ms self but its
   // callers only sum to 10ms" — surfacing it makes the missing time obvious.
   _attachTruncation(node, threshold) {
-    if (node.fid !== -1) {
+    // The focused frame is the new "root" of every trimmed stack, so its
+    // missing callers are intentional — not perf's fault. Skip it.
+    const focusedFid = this._focusPath.length > 0
+      ? this._focusPath[this._focusPath.length - 1]
+      : -1;
+    if (node.fid !== -1 && node.fid !== focusedFid) {
       let sum = 0;
       for (const c of node.children.values()) sum += c.total;
       const gap = node.total - sum;
@@ -197,6 +239,69 @@ export class TreeView {
     return this.profile.funcLabel(fid);
   }
 
+  // ----- Focus on subtree -----
+  // The focus is a path of fids in stack order (outer→inner). Every frame in
+  // the path must be present consecutively in a sample's stack for it to be
+  // counted; the focused frame is the last entry. Focus is a sample filter
+  // that persists across view-mode changes — `_buildCallTree` /
+  // `_buildTopFunctions` / `_expandLazy` each apply it in the way that makes
+  // sense for their mode (callees for calltree/top, callers for inverted).
+  //
+  // Focusing on the currently-selected row extends the existing path by
+  // whatever extra fids sit between the focused frame (depth 0 in the
+  // rendered tree) and the row. With no prior focus, the row's full chain
+  // becomes the new path.
+  focusSelected() {
+    const r = this.flatRows[this._selectedIdx];
+    if (!r || !r.node) return;
+    const node = r.node;
+    if (node.fid === TRUNCATED_FID) return;
+    const chain = [node.fid];
+    let needed = r.depth - 1;
+    for (let i = this._selectedIdx - 1; i >= 0 && needed >= 0; i--) {
+      if (this.flatRows[i].depth === needed) {
+        const n = this.flatRows[i].node;
+        if (n.fid === TRUNCATED_FID) return;
+        chain.unshift(n.fid);
+        needed--;
+      }
+    }
+    if (this._focusPath.length > 0) {
+      // chain[0] is the already-focused frame (depth 0 in the focused tree);
+      // only the frames deeper than it extend the filter. If the user pressed
+      // F on depth 0 itself, chain.slice(1) is empty → silent no-op.
+      if (chain.length <= 1) return;
+      this._focusPath = [...this._focusPath, ...chain.slice(1)];
+    } else {
+      this._focusPath = chain;
+    }
+    this._selectedNodeId = null;
+    this._selectedIdx = 0;
+    if (this.scrollEl) this.scrollEl.scrollTop = 0;
+    this.refresh();
+  }
+
+  focusToDepth(n) {
+    if (n === this._focusPath.length) return;
+    this._focusPath = this._focusPath.slice(0, n);
+    this._selectedNodeId = null;
+    this._selectedIdx = 0;
+    if (this.scrollEl) this.scrollEl.scrollTop = 0;
+    this.refresh();
+  }
+
+  _focusBreadcrumbs() {
+    const out = [];
+    for (let i = 0; i < this._focusPath.length; i++) {
+      out.push({
+        fid: this._focusPath[i],
+        label: this._labelFor(this._focusPath[i]),
+        depth: i + 1,
+      });
+    }
+    return out;
+  }
+
   _buildTopFunctions(sampleIdxs, hideUnknown) {
     // First pass: per-function total/self counts (dedupe per sample).
     const profile = this.profile;
@@ -206,10 +311,22 @@ export class TreeView {
     const seenStamp = new Int32Array(F);
     let stamp = 0;
     const { stackOffsets, stackFrames } = profile.samples;
+    const hasFocus = this._focusPath.length > 0;
+    // When focused: only count frames at/below the focused frame in each
+    // matching sample. Samples that don't contain the focus chain drop out
+    // entirely, and lazy expansion below is re-scoped the same way.
+    const matching = hasFocus ? [] : sampleIdxs;
     for (const i of sampleIdxs) {
       stamp++;
       const off = stackOffsets[i];
-      const end = stackOffsets[i + 1];
+      const sampleEnd = stackOffsets[i + 1];
+      let end = sampleEnd;
+      if (hasFocus) {
+        const focusedJ = this._findFocusJ(stackFrames, off, sampleEnd);
+        if (focusedJ < 0) continue;
+        end = focusedJ + 1;
+        matching.push(i);
+      }
       // self
       if (end > off) {
         const leaf = stackFrames[off];
@@ -225,7 +342,7 @@ export class TreeView {
     }
     // Build root with one child per function with total > 0.
     const root = this._newNode(-1);
-    root.total = sampleIdxs.length;
+    root.total = matching.length;
     for (let fid = 0; fid < F; fid++) {
       if (totals[fid] === 0) continue;
       const node = this._newNode(fid);
@@ -233,7 +350,7 @@ export class TreeView {
       node.self = selfs[fid];
       // Mark as lazy: children built on demand.
       node._lazy = true;
-      node._lazySamples = sampleIdxs;
+      node._lazySamples = matching;
       node._lazyFid = fid;
       root.children.set(fid, node);
     }
@@ -261,9 +378,19 @@ export class TreeView {
     // re-walked *all* samples containing that child (including paths that
     // never passed through the parent top function), producing descendant
     // costs that exceeded their ancestors.
+    const hasFocus = this._focusPath.length > 0;
     for (const i of node._lazySamples) {
       const off = stackOffsets[i];
-      const end = stackOffsets[i + 1];
+      const sampleEnd = stackOffsets[i + 1];
+      // When focused, the lazy expansion must stay inside the same trimmed
+      // window that _buildTopFunctions counted against — otherwise an expanded
+      // child could end up with more samples than its parent top-row.
+      let end = sampleEnd;
+      if (hasFocus) {
+        const focusedJ = this._findFocusJ(stackFrames, off, sampleEnd);
+        if (focusedJ < 0) continue;
+        end = focusedJ + 1;
+      }
       let k = -1;
       for (let j = off; j < end; j++) {
         if (stackFrames[j] === fid) { k = j; break; }

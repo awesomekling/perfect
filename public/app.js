@@ -35,6 +35,7 @@ const els = {
   treeHeaderTree: $("#tree-header-tree"),
   treeHeaderSamples: $("#tree-header-samples"),
   sampleSidebar: $("#sample-sidebar"),
+  focusBreadcrumbs: $("#focus-breadcrumbs"),
 };
 
 let profile = null;
@@ -110,7 +111,9 @@ function setProfile(json, name) {
     statsEl: els.stats,
     sidebarEl: els.sampleSidebar,
     getFilter,
+    getFocusPath: () => (treeView ? treeView._focusPath : []),
   });
+  treeView.onFocusChange = renderFocusBreadcrumbs;
   treeView.onMatchesChange = (cur, total) => {
     if (!els.search.value) {
       els.searchCount.textContent = "";
@@ -131,12 +134,40 @@ function setProfile(json, name) {
   activeView().refresh();
 }
 
+function renderFocusBreadcrumbs(crumbs) {
+  const el = els.focusBreadcrumbs;
+  if (!crumbs || crumbs.length === 0 || mode === "samples") {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+  let html = '<span class="label">Focus:</span>';
+  html += '<button class="crumb" data-depth="0" title="Back to root (unfocus)">Root</button>';
+  for (let i = 0; i < crumbs.length; i++) {
+    const c = crumbs[i];
+    html += '<span class="sep">›</span>';
+    const cls = i === crumbs.length - 1 ? "crumb current" : "crumb";
+    html += `<button class="${cls}" data-depth="${c.depth}" title="${escapeHtml(c.label)}">${escapeHtml(c.label)}</button>`;
+  }
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+  for (const btn of el.querySelectorAll(".crumb")) {
+    btn.addEventListener("click", () => {
+      if (!treeView) return;
+      treeView.focusToDepth(+btn.dataset.depth);
+    });
+  }
+}
+
 function applyModeUI() {
   const samples = mode === "samples";
   els.treeFilters.classList.toggle("hidden", samples);
   els.treeHeaderTree.classList.toggle("hidden", samples);
   els.treeHeaderSamples.classList.toggle("hidden", !samples);
   els.sampleSidebar.classList.toggle("hidden", !samples);
+  // Breadcrumb is only meaningful for tree views. Hide now; the subsequent
+  // tree refresh (if any) will re-show it if a focus is active.
+  if (samples) els.focusBreadcrumbs.classList.add("hidden");
   // Both views share the same scroll element. Detach the inactive one so its
   // scroll handler can't trample the active one's rendering.
   if (samples) { treeView.detach(); samplesView.attach(); }
@@ -218,6 +249,9 @@ window.addEventListener("keydown", (e) => {
     case "Enter":
     case " ":          e.preventDefault(); view.toggleSelected(); break;
     case "/":          if (mode !== "samples") { e.preventDefault(); els.search.focus(); els.search.select(); } break;
+    case "f": case "F":
+      if (mode !== "samples") { e.preventDefault(); treeView.focusSelected(); }
+      break;
     case "0":          if (timeline) { e.preventDefault(); timeline.resetView(); } break;
     case "+":
     case "=":          if (timeline) { e.preventDefault(); zoomCentered(0.5); } break;

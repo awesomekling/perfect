@@ -7,13 +7,14 @@ import { fmtMs, fmtTimeShort } from "./profile.js";
 const ROW_H = 22;
 
 export class SamplesView {
-  constructor({ profile, scrollEl, treeEl, statsEl, sidebarEl, getFilter }) {
+  constructor({ profile, scrollEl, treeEl, statsEl, sidebarEl, getFilter, getFocusPath }) {
     this.profile = profile;
     this.scrollEl = scrollEl;
     this.treeEl = treeEl;
     this.statsEl = statsEl;
     this.sidebarEl = sidebarEl;
     this.getFilter = getFilter;
+    this.getFocusPath = getFocusPath || (() => []);
     this.samples = [];       // sample indices (sorted by time, since profile.samples.times already is)
     this._selectedIdx = -1;
     this._onScroll = () => this._renderVisible();
@@ -38,12 +39,31 @@ export class SamplesView {
   refresh() {
     const t0 = performance.now();
     const { startNs, endNs, tids } = this.getFilter();
-    const { times, tids: stids } = this.profile.samples;
+    const { times, tids: stids, stackOffsets, stackFrames } = this.profile.samples;
+    const focusPath = this.getFocusPath();
+    const K = focusPath.length;
     const rows = [];
     for (let i = 0; i < times.length; i++) {
       const t = times[i];
       if (t < startNs || t > endNs) continue;
       if (tids && !tids.has(stids[i])) continue;
+      if (K > 0) {
+        // Drop samples whose stack doesn't contain the focus chain. Same
+        // matching rule as the tree views: contiguous run in inner→outer
+        // order, comparing against focusPath reversed (since focusPath is
+        // stored outer→inner).
+        const off = stackOffsets[i];
+        const end = stackOffsets[i + 1];
+        let matched = false;
+        outer: for (let j = off; j + K <= end; j++) {
+          for (let k = 0; k < K; k++) {
+            if (stackFrames[j + k] !== focusPath[K - 1 - k]) continue outer;
+          }
+          matched = true;
+          break;
+        }
+        if (!matched) continue;
+      }
       rows.push(i);
     }
     this.samples = rows;
