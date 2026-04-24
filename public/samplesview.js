@@ -37,7 +37,6 @@ export class SamplesView {
   }
 
   refresh() {
-    const t0 = performance.now();
     const { startNs, endNs, tids } = this.getFilter();
     const { times, tids: stids, stackOffsets, stackFrames } = this.profile.samples;
     const focusPath = this.getFocusPath();
@@ -72,17 +71,17 @@ export class SamplesView {
     this.scrollEl.scrollTop = 0;
     this._renderVisible();
     this._renderSidebar();
-    this._renderStats(performance.now() - t0);
+    this._renderStats();
   }
 
-  _renderStats(buildMs) {
+  _renderStats() {
     const { startNs, endNs, tids } = this.getFilter();
     const dur = endNs - startNs;
     const tidStr = tids ? `${tids.size} thread${tids.size === 1 ? "" : "s"}` : "all threads";
     const onCpu = this.profile.timeKnown
       ? ` · ≈${fmtTimeShort(this.samples.length * this.profile.nsPerSample)} on-CPU`
       : "";
-    this.statsEl.textContent = `${this.samples.length.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window · built in ${buildMs.toFixed(0)}ms`;
+    this.statsEl.textContent = `${this.samples.length.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window`;
   }
 
   _renderVisible() {

@@ -75,7 +75,6 @@ export class TreeView {
   }
 
   refresh() {
-    const t0 = performance.now();
     const mode = this.getMode();
     const { startNs, endNs, tids } = this.getFilter();
     const hideUnknown = this.getHideUnknown();
@@ -128,18 +127,18 @@ export class TreeView {
 
     this._buildFlatRows();
     this._renderVisible();
-    this._renderStats(performance.now() - t0);
+    this._renderStats();
     if (this.onFocusChange) this.onFocusChange(this._focusBreadcrumbs());
   }
 
-  _renderStats(buildMs) {
+  _renderStats() {
     const { startNs, endNs, tids } = this.getFilter();
     const dur = endNs - startNs;
     const tidStr = tids ? `${tids.size} thread${tids.size === 1 ? "" : "s"}` : "all threads";
     const onCpu = this.profile.timeKnown
       ? ` · ≈${fmtTimeShort(this.totalSamples * this.profile.nsPerSample)} on-CPU`
       : "";
-    this.statsEl.textContent = `${this.totalSamples.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window · built in ${buildMs.toFixed(0)}ms`;
+    this.statsEl.textContent = `${this.totalSamples.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window`;
   }
 
   _buildCallTree(sampleIdxs, inverted, hideUnknown) {
