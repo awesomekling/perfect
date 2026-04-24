@@ -28,6 +28,16 @@ const PUBLIC = path.join(ROOT, "public");
 const CACHE = path.join(ROOT, ".cache");
 await fsp.mkdir(CACHE, { recursive: true });
 
+// Additional directories from which the server will serve profiles, beyond
+// cwd and .cache/uploads/. Colon-separated, resolved to absolute prefixes
+// at startup. Any file under one of these (or a subdir) is accepted as a
+// `path` param on the analysis endpoints.
+const EXTRA_PROFILE_DIRS = (process.env.PERFECT_PROFILE_DIRS || "")
+  .split(":")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((s) => path.resolve(s));
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -167,11 +177,18 @@ async function getProfile(absPath) {
   return p;
 }
 
+function isUnder(absPath, dir) {
+  return absPath === dir || absPath.startsWith(dir + path.sep);
+}
+
 function resolveRequestedPath(p) {
   const absPath = path.resolve(process.cwd(), p);
-  const inCwd = absPath.startsWith(path.resolve(process.cwd()) + path.sep) || path.dirname(absPath) === path.resolve(process.cwd());
-  const inUploads = absPath.startsWith(path.join(CACHE, "uploads") + path.sep);
-  if (!inCwd && !inUploads) return null;
+  const allowedDirs = [
+    path.resolve(process.cwd()),
+    path.join(CACHE, "uploads"),
+    ...EXTRA_PROFILE_DIRS,
+  ];
+  if (!allowedDirs.some((d) => isUnder(absPath, d))) return null;
   return absPath;
 }
 
@@ -436,11 +453,8 @@ async function handleApi(req, res) {
   if (u.pathname === "/api/profile") {
     const p = u.searchParams.get("path");
     if (!p) return send(res, 400, "missing path");
-    let absPath = path.resolve(process.cwd(), p);
-    // Only allow files in cwd or in .cache/uploads/
-    const inCwd = absPath.startsWith(path.resolve(process.cwd()) + path.sep) || path.dirname(absPath) === path.resolve(process.cwd());
-    const inUploads = absPath.startsWith(path.join(CACHE, "uploads") + path.sep);
-    if (!inCwd && !inUploads) return send(res, 403, "path not allowed");
+    const absPath = resolveRequestedPath(p);
+    if (!absPath) return send(res, 403, "path not allowed");
     try {
       await fsp.access(absPath);
     } catch {
@@ -484,4 +498,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`perfect: http://localhost:${PORT}/  (cwd=${process.cwd()})`);
+  if (EXTRA_PROFILE_DIRS.length > 0) {
+    console.log(`  extra profile dirs: ${EXTRA_PROFILE_DIRS.join(", ")}`);
+  }
 });
