@@ -12,6 +12,15 @@ import { pipeline } from "node:stream/promises";
 import { createReadStream } from "node:fs";
 
 import { parsePerfData } from "./parse-perf.js";
+import { Profile } from "./public/profile.js";
+import {
+  filterSampleIndices,
+  buildCallTree,
+  buildTopFunctions,
+  expandTopFunction,
+  sortChildren,
+  TRUNCATED_FID,
+} from "./public/analysis.js";
 
 const PORT = +(process.env.PORT || 5173);
 const ROOT = path.dirname(url.fileURLToPath(import.meta.url));
@@ -132,6 +141,283 @@ async function handleUpload(req, res) {
   res.end(JSON.stringify({ path: finalPath, name, size: bytes }));
 }
 
+// -----------------------------------------------------------------------------
+// Agent-facing analysis API.
+//
+// The browser UI consumes the full parsed profile via /api/profile and does its
+// own analysis client-side. These endpoints run the same analysis functions
+// (imported from public/analysis.js) server-side and return small, pruned JSON
+// aggregates suitable for an LLM — labels resolved, percentages computed,
+// top-N / maxDepth / minPct applied so the response doesn't balloon.
+
+// In-memory cache of parsed Profile objects, keyed by the on-disk cache path
+// (which already encodes absolute path + mtime + schema). Lets repeated agent
+// calls against the same file skip JSON.parse + typed-array conversion.
+const profileCache = new Map();
+
+async function getProfile(absPath) {
+  const cache = await loadProfile(absPath);
+  let p = profileCache.get(cache);
+  if (!p) {
+    const gz = await fsp.readFile(cache);
+    const json = JSON.parse(zlib.gunzipSync(gz));
+    p = new Profile(json);
+    profileCache.set(cache, p);
+  }
+  return p;
+}
+
+function resolveRequestedPath(p) {
+  const absPath = path.resolve(process.cwd(), p);
+  const inCwd = absPath.startsWith(path.resolve(process.cwd()) + path.sep) || path.dirname(absPath) === path.resolve(process.cwd());
+  const inUploads = absPath.startsWith(path.join(CACHE, "uploads") + path.sep);
+  if (!inCwd && !inUploads) return null;
+  return absPath;
+}
+
+function parseFilter(u, profile) {
+  const getNum = (k) => {
+    const v = u.searchParams.get(k);
+    if (v == null || v === "") return null;
+    const n = +v;
+    return Number.isFinite(n) ? n : null;
+  };
+  const startNs = getNum("startNs") ?? profile.startNs;
+  const endNs = getNum("endNs") ?? profile.endNs;
+  let tids = null;
+  const tidStr = u.searchParams.get("tids");
+  if (tidStr) {
+    const nums = tidStr.split(",").map((s) => +s).filter((n) => Number.isFinite(n));
+    if (nums.length > 0) tids = new Set(nums);
+  }
+  return { startNs, endNs, tids };
+}
+
+function parseBool(u, key, dflt = false) {
+  const v = u.searchParams.get(key);
+  if (v == null) return dflt;
+  return v === "1" || v === "true" || v === "yes";
+}
+
+function parseIntParam(u, key, dflt) {
+  const v = u.searchParams.get(key);
+  if (v == null || v === "") return dflt;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : dflt;
+}
+
+function parseFloatParam(u, key, dflt) {
+  const v = u.searchParams.get(key);
+  if (v == null || v === "") return dflt;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : dflt;
+}
+
+function parseFocus(u) {
+  const v = u.searchParams.get("focus");
+  if (!v) return [];
+  return v.split(",").map((s) => +s).filter((n) => Number.isFinite(n));
+}
+
+function labelOf(profile, fid) {
+  if (fid === TRUNCATED_FID) return "[truncated]";
+  return profile.funcLabel(fid);
+}
+
+function nodeFields(profile, node, totalRef) {
+  const pct = totalRef ? (100 * node.total / totalRef) : 0;
+  const selfPct = totalRef ? (100 * node.self / totalRef) : 0;
+  const out = {
+    fid: node.fid,
+    label: labelOf(profile, node.fid),
+    dso: node.fid === TRUNCATED_FID ? "" : profile.funcDsoShort(node.fid),
+    total: node.total,
+    totalPct: +pct.toFixed(2),
+    self: node.self,
+    selfPct: +selfPct.toFixed(2),
+  };
+  if (profile.timeKnown) {
+    out.totalNs = Math.round(node.total * profile.nsPerSample);
+    out.selfNs = Math.round(node.self * profile.nsPerSample);
+  }
+  return out;
+}
+
+function serializeSubtree(profile, node, totalRef, { maxDepth, minPct, limit, depth = 0 }) {
+  const out = nodeFields(profile, node, totalRef);
+  if (node._lazy) out.lazy = true;
+  if (depth < maxDepth && node.children.size > 0) {
+    const kids = sortChildren(node);
+    const children = [];
+    let hidden = 0;
+    for (const c of kids) {
+      const cpct = totalRef ? (100 * c.total / totalRef) : 0;
+      if (cpct < minPct) { hidden++; continue; }
+      if (children.length >= limit) { hidden++; continue; }
+      children.push(serializeSubtree(profile, c, totalRef, { maxDepth, minPct, limit, depth: depth + 1 }));
+    }
+    out.children = children;
+    if (hidden > 0) out.hiddenChildren = hidden;
+  } else if (node.children.size > 0) {
+    out.truncatedAtDepth = true;
+  }
+  return out;
+}
+
+async function apiSummary(req, res, u) {
+  const p = u.searchParams.get("path");
+  if (!p) return send(res, 400, "missing path");
+  const abs = resolveRequestedPath(p);
+  if (!abs) return send(res, 403, "path not allowed");
+  try { await fsp.access(abs); } catch { return send(res, 404, "no such file"); }
+  const profile = await getProfile(abs);
+  const threads = profile.threads.map((t) => ({
+    tid: t.tid,
+    comm: t.primaryComm,
+    comms: t.comms.map((c) => ({ name: c.name, fromNs: c.fromNs, toNs: c.toNs })),
+  }));
+  const out = {
+    path: abs,
+    meta: profile.meta,
+    durationNs: profile.durationNs,
+    sampleCount: profile.sampleCount,
+    timeKnown: profile.timeKnown,
+    nsPerSample: profile.nsPerSample,
+    startNs: profile.startNs,
+    endNs: profile.endNs,
+    threads,
+    functionCount: profile.functions.length,
+    dsoCount: profile.dsos.length,
+  };
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(out));
+}
+
+async function apiTop(req, res, u) {
+  const p = u.searchParams.get("path");
+  if (!p) return send(res, 400, "missing path");
+  const abs = resolveRequestedPath(p);
+  if (!abs) return send(res, 403, "path not allowed");
+  try { await fsp.access(abs); } catch { return send(res, 404, "no such file"); }
+  const profile = await getProfile(abs);
+  const filter = parseFilter(u, profile);
+  const hideUnknown = parseBool(u, "hideUnknown", false);
+  const limit = Math.max(1, Math.min(500, parseIntParam(u, "limit", 30)));
+  const focusPath = parseFocus(u);
+  const sampleIdxs = filterSampleIndices(profile, filter);
+  const root = buildTopFunctions(profile, { sampleIdxs, hideUnknown, focusPath });
+  const kids = sortChildren(root).slice(0, limit);
+  const out = {
+    totalSamples: root.total,
+    durationNs: filter.endNs - filter.startNs,
+    filter: {
+      startNs: filter.startNs,
+      endNs: filter.endNs,
+      tids: filter.tids ? [...filter.tids] : null,
+      hideUnknown,
+      focus: focusPath.map((fid) => ({ fid, label: labelOf(profile, fid) })),
+    },
+    functions: kids.map((n) => nodeFields(profile, n, root.total)),
+  };
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(out));
+}
+
+async function apiTree(req, res, u) {
+  const p = u.searchParams.get("path");
+  if (!p) return send(res, 400, "missing path");
+  const abs = resolveRequestedPath(p);
+  if (!abs) return send(res, 403, "path not allowed");
+  try { await fsp.access(abs); } catch { return send(res, 404, "no such file"); }
+  const profile = await getProfile(abs);
+  const filter = parseFilter(u, profile);
+  const hideUnknown = parseBool(u, "hideUnknown", false);
+  const inverted = parseBool(u, "inverted", false);
+  const maxDepth = Math.max(1, Math.min(20, parseIntParam(u, "maxDepth", 6)));
+  const minPct = Math.max(0, parseFloatParam(u, "minPct", 1));
+  const limit = Math.max(1, Math.min(100, parseIntParam(u, "limit", 10)));
+  const focusPath = parseFocus(u);
+  const sampleIdxs = filterSampleIndices(profile, filter);
+  const root = buildCallTree(profile, { sampleIdxs, inverted, hideUnknown, focusPath });
+  const kids = sortChildren(root);
+  const children = [];
+  let hidden = 0;
+  for (const c of kids) {
+    const cpct = root.total ? (100 * c.total / root.total) : 0;
+    if (cpct < minPct) { hidden++; continue; }
+    if (children.length >= limit) { hidden++; continue; }
+    children.push(serializeSubtree(profile, c, root.total, { maxDepth: maxDepth - 1, minPct, limit, depth: 0 }));
+  }
+  const out = {
+    mode: inverted ? "inverted" : "calltree",
+    totalSamples: root.total,
+    durationNs: filter.endNs - filter.startNs,
+    filter: {
+      startNs: filter.startNs,
+      endNs: filter.endNs,
+      tids: filter.tids ? [...filter.tids] : null,
+      hideUnknown,
+      focus: focusPath.map((fid) => ({ fid, label: labelOf(profile, fid) })),
+    },
+    params: { maxDepth, minPct, limit },
+    children,
+    hiddenChildren: hidden,
+  };
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(out));
+}
+
+async function apiFind(req, res, u) {
+  const p = u.searchParams.get("path");
+  if (!p) return send(res, 400, "missing path");
+  const q = (u.searchParams.get("q") || "").toLowerCase();
+  if (!q) return send(res, 400, "missing q");
+  const abs = resolveRequestedPath(p);
+  if (!abs) return send(res, 403, "path not allowed");
+  try { await fsp.access(abs); } catch { return send(res, 404, "no such file"); }
+  const profile = await getProfile(abs);
+  const limit = Math.max(1, Math.min(500, parseIntParam(u, "limit", 50)));
+  const hideUnknown = parseBool(u, "hideUnknown", true);
+  // Per-function totals across all samples (unfiltered), so "find" is just a
+  // symbol lookup with sample counts attached — not a window-scoped query.
+  const F = profile.functions.length;
+  const totals = new Int32Array(F);
+  const selfs = new Int32Array(F);
+  const seen = new Int32Array(F);
+  let stamp = 0;
+  const { stackOffsets, stackFrames, times } = profile.samples;
+  for (let i = 0; i < times.length; i++) {
+    stamp++;
+    const off = stackOffsets[i];
+    const end = stackOffsets[i + 1];
+    if (end > off) selfs[stackFrames[off]]++;
+    for (let j = off; j < end; j++) {
+      const fid = stackFrames[j];
+      if (seen[fid] === stamp) continue;
+      seen[fid] = stamp;
+      totals[fid]++;
+    }
+  }
+  const matches = [];
+  for (let fid = 0; fid < F; fid++) {
+    if (totals[fid] === 0) continue;
+    if (hideUnknown && profile.isUnknown(fid)) continue;
+    const label = profile.funcLabel(fid);
+    if (!label.toLowerCase().includes(q)) continue;
+    matches.push({ fid, label, dso: profile.funcDsoShort(fid), total: totals[fid], self: selfs[fid] });
+  }
+  matches.sort((a, b) => b.total - a.total);
+  const truncated = matches.length > limit;
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({
+    query: q,
+    totalSamples: times.length,
+    matches: matches.slice(0, limit),
+    truncated,
+    matchCount: matches.length,
+  }));
+}
+
 async function handleApi(req, res) {
   const u = new URL(req.url, "http://x");
   if (req.method === "POST" && u.pathname === "/api/upload") {
@@ -143,6 +429,10 @@ async function handleApi(req, res) {
     res.end(JSON.stringify(list));
     return;
   }
+  if (u.pathname === "/api/summary") return await apiSummary(req, res, u);
+  if (u.pathname === "/api/top")     return await apiTop(req, res, u);
+  if (u.pathname === "/api/tree")    return await apiTree(req, res, u);
+  if (u.pathname === "/api/find")    return await apiFind(req, res, u);
   if (u.pathname === "/api/profile") {
     const p = u.searchParams.get("path");
     if (!p) return send(res, 400, "missing path");
