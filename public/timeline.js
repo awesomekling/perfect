@@ -208,7 +208,13 @@ export class Timeline {
 
   _nsOfX(x, w) {
     const span = this.viewEndNs - this.viewStartNs;
-    return this.viewStartNs + (x / w) * span;
+    const ns = this.viewStartNs + (x / w) * span;
+    // Clamp to the recorded profile bounds so dragging past the canvas edge
+    // can't produce a selection that extends beyond where samples actually
+    // exist (which would otherwise inflate the window size in the stats line).
+    if (ns < this.profile.startNs) return this.profile.startNs;
+    if (ns > this.profile.endNs)   return this.profile.endNs;
+    return ns;
   }
 
   _drawRuler() {
