@@ -17,10 +17,12 @@ export class Timeline {
     this.overlayEl = overlayEl;
     this.onChange = onChange;
     this.onViewChange = onViewChange;
-    // Hover context from the tree, or null. `{focus, local}` — both are
-    // outer→inner fid chains; a sample is highlighted iff its stack contains
-    // each chain contiguously. Persisted so the highlight redraws correctly
-    // on zoom/pan/resize without the tree having to re-send it.
+    // Hover context from the tree, or null.
+    //   `{focus, local, mode, hideUnknown}` — both chains outer→inner.
+    // A sample is highlighted iff its stack contains the focus chain (if
+    // any) contiguously and the local chain in the position implied by mode
+    // (inverted: anchored at innermost; otherwise: contiguous anywhere).
+    // Persisted so the highlight redraws correctly on zoom/pan/resize.
     this._hoverContext = null;
 
     // selection in absolute ns
@@ -133,8 +135,9 @@ export class Timeline {
     if (this.onViewChange) this.onViewChange(this.isFullView());
   }
 
-  // Called from the tree view on hover (debounced). `ctx` is `{focus, local}`
-  // — both outer→inner fid chains (focus may be empty) — or null to clear.
+  // Called from the tree view on hover (debounced). `ctx` is
+  // `{focus, local, mode, hideUnknown}` (focus may be empty), or null to
+  // clear.
   setHoverChain(ctx) {
     this._hoverContext = (ctx && ctx.local && ctx.local.length > 0) ? ctx : null;
     this._drawHighlight();
@@ -150,7 +153,8 @@ export class Timeline {
     ctx.clearRect(0, 0, w, h);
     const hctx = this._hoverContext;
     if (!hctx) return;
-    const { focus, local } = hctx;
+    const { focus, local, mode, hideUnknown } = hctx;
+    const profile = this.profile;
 
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
@@ -164,14 +168,18 @@ export class Timeline {
     for (let i = lo; i < hi; i++) {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
-      // Both chains must appear contiguously in the stack. They may overlap
-      // or have a gap between them — we don't care which, since in inverted
-      // and top-functions modes the focused frame and the rendered row aren't
-      // generally adjacent.
       const off = stackOffsets[i];
       const end = stackOffsets[i + 1];
+      // Focus matches contiguous-anywhere; local matches per mode (anchored
+      // at innermost in inverted, contiguous-anywhere elsewhere). Inverted
+      // anchoring is what makes a leaf row highlight only samples where it
+      // really is the leaf, instead of every sample that contains it.
       if (focus.length > 0 && !containsChain(stackFrames, off, end, focus)) continue;
-      if (!containsChain(stackFrames, off, end, local)) continue;
+      if (mode === "inverted") {
+        if (!matchAtInner(stackFrames, profile, hideUnknown, off, end, local)) continue;
+      } else {
+        if (!containsChain(stackFrames, off, end, local)) continue;
+      }
       const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
       buckets[li * W + px]++;
     }
@@ -527,6 +535,23 @@ function containsChain(stackFrames, off, end, chain) {
     return true;
   }
   return false;
+}
+
+// True if `chain` (outer→inner) sits at the innermost end of the stack —
+// the first non-unknown frames going outward from `off` must be the chain's
+// innermost element first, then the next outer, etc. With hideUnknown the
+// rendered tree skips unknowns, so the matcher does too; otherwise unknowns
+// must match positionally.
+function matchAtInner(stackFrames, profile, hideUnknown, off, end, chain) {
+  const K = chain.length;
+  let pos = off;
+  for (let k = K - 1; k >= 0; k--) {
+    while (pos < end && hideUnknown && profile.isUnknown(stackFrames[pos])) pos++;
+    if (pos >= end) return false;
+    if (stackFrames[pos] !== chain[k]) return false;
+    pos++;
+  }
+  return true;
 }
 
 function lowerBound(arr, v) {

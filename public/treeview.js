@@ -164,21 +164,22 @@ export class TreeView {
     return path;
   }
 
-  // Hover context for the timeline: `focus` and `local` are independent
-  // outer→inner chains, both of which must appear contiguously in a sample's
-  // stack for it to be highlighted. Splitting them this way is necessary
-  // because in inverted/top modes the focused frame and the rendered row
-  // aren't adjacent in the stack — there's an unspecified gap between them.
-  // For calltree+focus this is slightly looser than the old merged chain in
-  // recursive code (focus and local can match different occurrences of the
-  // focused frame), but for visual highlight purposes that's fine.
+  // Hover context for the timeline. `focus` and `local` are outer→inner fid
+  // chains; the timeline highlights samples where both appear in the stack.
+  // `mode` and `hideUnknown` tell the timeline how to anchor the local
+  // chain: in inverted mode it must sit at the innermost end of the stack
+  // (so e.g. hovering a leaf row only highlights samples where it really is
+  // the leaf), while other modes accept the chain contiguously anywhere —
+  // which is fine because their depth-0 frames (outermost in calltree, top
+  // function fid in top mode) typically appear once per stack.
   _hoverContextForRow(i) {
     const path = this._renderedPathForRow(i);
     if (!path) return null;
+    const mode = this.getMode();
     // In inverted mode the rendered tree walks innermost→outermost, so the
     // path we just built is inner→outer. Flip it to canonical outer→inner.
-    const local = this.getMode() === "inverted" ? path.slice().reverse() : path;
-    return { focus: this._focusPath, local };
+    const local = mode === "inverted" ? path.slice().reverse() : path;
+    return { focus: this._focusPath, local, mode, hideUnknown: this.getHideUnknown() };
   }
 
   // ----- Focus on subtree -----
