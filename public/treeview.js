@@ -42,9 +42,11 @@ export class TreeView {
     // refresh() silently clears it.
     this._focusPath = [];
     this.onFocusChange = null; // (crumbs) => void, where crumb = {fid,label,total,pct,depth}
-    // Hover bridge to the timeline: fires `(fidChain | null)` a short time
-    // after the mouse settles on a row. Debounced so scrubbing across rows
-    // doesn't burn CPU scanning samples we'll never paint.
+    // Hover bridge to the timeline: fires `({focus, local} | null)` a short
+    // time after the mouse settles on a row. Debounced so scrubbing across
+    // rows doesn't burn CPU scanning samples we'll never paint. Both chains
+    // are outer→inner; the timeline highlights samples whose stack contains
+    // each contiguously.
     this.onHoverChange = null;
     this._hoverTimer = null;
     this._pendingHoverIdx = null;
@@ -141,6 +143,43 @@ export class TreeView {
     return this.profile.funcLabel(fid);
   }
 
+  // Build the rendered-tree path from depth-0 down to `flatRows[i]`. Returns
+  // an array of fids in display order, or null if the row or any ancestor is
+  // synthetic ([truncated]).
+  _renderedPathForRow(i) {
+    const r = this.flatRows[i];
+    if (!r || !r.node) return null;
+    if (r.node.fid === TRUNCATED_FID) return null;
+    const path = [r.node.fid];
+    let needed = r.depth - 1;
+    for (let j = i - 1; j >= 0 && needed >= 0; j--) {
+      if (this.flatRows[j].depth === needed) {
+        const n = this.flatRows[j].node;
+        if (n.fid === TRUNCATED_FID) return null;
+        path.unshift(n.fid);
+        needed--;
+      }
+    }
+    return path;
+  }
+
+  // Hover context for the timeline: `focus` and `local` are independent
+  // outer→inner chains, both of which must appear contiguously in a sample's
+  // stack for it to be highlighted. Splitting them this way is necessary
+  // because in inverted/top modes the focused frame and the rendered row
+  // aren't adjacent in the stack — there's an unspecified gap between them.
+  // For calltree+focus this is slightly looser than the old merged chain in
+  // recursive code (focus and local can match different occurrences of the
+  // focused frame), but for visual highlight purposes that's fine.
+  _hoverContextForRow(i) {
+    const path = this._renderedPathForRow(i);
+    if (!path) return null;
+    // In inverted mode the rendered tree walks innermost→outermost, so the
+    // path we just built is inner→outer. Flip it to canonical outer→inner.
+    const local = this.getMode() === "inverted" ? path.slice().reverse() : path;
+    return { focus: this._focusPath, local };
+  }
+
   // ----- Focus on subtree -----
   // The focus is a path of fids in stack order (outer→inner). Every frame in
   // the path must be present consecutively in a sample's stack for it to be
@@ -153,34 +192,14 @@ export class TreeView {
   // whatever extra fids sit between the focused frame (depth 0 in the
   // rendered tree) and the row. With no prior focus, the row's full chain
   // becomes the new path.
-  // Compute the full fid-chain (outer→inner, including any existing focus
-  // prefix) that corresponds to the row at `flatRows[i]`. Returns null if
-  // the row or any ancestor is synthetic ([truncated]).
-  _fullChainForRow(i) {
-    const r = this.flatRows[i];
-    if (!r || !r.node) return null;
-    if (r.node.fid === TRUNCATED_FID) return null;
-    const tail = [r.node.fid];
-    let needed = r.depth - 1;
-    for (let j = i - 1; j >= 0 && needed >= 0; j--) {
-      if (this.flatRows[j].depth === needed) {
-        const n = this.flatRows[j].node;
-        if (n.fid === TRUNCATED_FID) return null;
-        tail.unshift(n.fid);
-        needed--;
-      }
-    }
-    if (this._focusPath.length > 0) {
-      // tail[0] is the already-focused frame (depth 0 in the focused tree);
-      // only deeper frames extend the chain.
-      return [...this._focusPath, ...tail.slice(1)];
-    }
-    return tail;
-  }
-
   focusSelected() {
-    const chain = this._fullChainForRow(this._selectedIdx);
-    if (!chain) return;
+    const path = this._renderedPathForRow(this._selectedIdx);
+    if (!path) return;
+    // In calltree+focus, path[0] is the already-focused frame; only deeper
+    // frames extend the chain. With no prior focus, the path is the chain.
+    const chain = this._focusPath.length > 0
+      ? [...this._focusPath, ...path.slice(1)]
+      : path;
     // No change if the selected row *is* the already-focused frame.
     if (chain.length === this._focusPath.length) return;
     this._focusPath = chain;
@@ -219,8 +238,8 @@ export class TreeView {
       this._hoverTimer = null;
       if (!this.onHoverChange) return;
       const i = this._pendingHoverIdx;
-      const chain = (i == null) ? null : this._fullChainForRow(i);
-      this.onHoverChange(chain);
+      const ctx = (i == null) ? null : this._hoverContextForRow(i);
+      this.onHoverChange(ctx);
     }, 75);
   }
 

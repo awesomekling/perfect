@@ -17,10 +17,11 @@ export class Timeline {
     this.overlayEl = overlayEl;
     this.onChange = onChange;
     this.onViewChange = onViewChange;
-    // fid-chain currently being hovered in the tree, or null. Persisted so
-    // the highlight redraws correctly on zoom/pan/resize without the tree
-    // having to re-send it.
-    this._hoverChain = null;
+    // Hover context from the tree, or null. `{focus, local}` — both are
+    // outer→inner fid chains; a sample is highlighted iff its stack contains
+    // each chain contiguously. Persisted so the highlight redraws correctly
+    // on zoom/pan/resize without the tree having to re-send it.
+    this._hoverContext = null;
 
     // selection in absolute ns
     this.selStartNs = profile.startNs;
@@ -132,10 +133,10 @@ export class Timeline {
     if (this.onViewChange) this.onViewChange(this.isFullView());
   }
 
-  // Called from the tree view on hover (debounced). `chain` is a fid array
-  // in outer→inner order, or null to clear.
-  setHoverChain(chain) {
-    this._hoverChain = (chain && chain.length > 0) ? chain : null;
+  // Called from the tree view on hover (debounced). `ctx` is `{focus, local}`
+  // — both outer→inner fid chains (focus may be empty) — or null to clear.
+  setHoverChain(ctx) {
+    this._hoverContext = (ctx && ctx.local && ctx.local.length > 0) ? ctx : null;
     this._drawHighlight();
   }
 
@@ -147,8 +148,9 @@ export class Timeline {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const w = c.width / dpr, h = c.height / dpr;
     ctx.clearRect(0, 0, w, h);
-    const chain = this._hoverChain;
-    if (!chain || chain.length === 0) return;
+    const hctx = this._hoverContext;
+    if (!hctx) return;
+    const { focus, local } = hctx;
 
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
@@ -159,23 +161,17 @@ export class Timeline {
     const { times, tids, stackOffsets, stackFrames } = this.profile.samples;
     const lo = lowerBound(times, this.viewStartNs);
     const hi = upperBound(times, this.viewEndNs);
-    const K = chain.length;
     for (let i = lo; i < hi; i++) {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
-      // Same contiguous-chain match the tree views use. Chain is outer→inner,
-      // the stack array is inner→outer, hence the reversed comparison.
+      // Both chains must appear contiguously in the stack. They may overlap
+      // or have a gap between them — we don't care which, since in inverted
+      // and top-functions modes the focused frame and the rendered row aren't
+      // generally adjacent.
       const off = stackOffsets[i];
       const end = stackOffsets[i + 1];
-      let matched = false;
-      outer: for (let j = off; j + K <= end; j++) {
-        for (let k = 0; k < K; k++) {
-          if (stackFrames[j + k] !== chain[K - 1 - k]) continue outer;
-        }
-        matched = true;
-        break;
-      }
-      if (!matched) continue;
+      if (focus.length > 0 && !containsChain(stackFrames, off, end, focus)) continue;
+      if (!containsChain(stackFrames, off, end, local)) continue;
       const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
       buckets[li * W + px]++;
     }
@@ -517,6 +513,20 @@ export class Timeline {
     if (start < this.profile.startNs) start = this.profile.startNs;
     return [start, end];
   }
+}
+
+// True if `chain` (outer→inner) appears contiguously somewhere in
+// stackFrames[off..end). The stack is inner→outer, hence the reversed
+// comparison.
+function containsChain(stackFrames, off, end, chain) {
+  const K = chain.length;
+  outer: for (let j = off; j + K <= end; j++) {
+    for (let k = 0; k < K; k++) {
+      if (stackFrames[j + k] !== chain[K - 1 - k]) continue outer;
+    }
+    return true;
+  }
+  return false;
 }
 
 function lowerBound(arr, v) {

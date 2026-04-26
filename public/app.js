@@ -116,7 +116,7 @@ function setProfile(json, name) {
     getFocusPath: () => (treeView ? treeView._focusPath : []),
   });
   treeView.onFocusChange = renderFocusBreadcrumbs;
-  treeView.onHoverChange = (chain) => timeline && timeline.setHoverChain(chain);
+  treeView.onHoverChange = (ctx) => timeline && timeline.setHoverChain(ctx);
   treeView.onMatchesChange = (cur, total) => {
     if (!els.search.value) {
       els.searchCount.textContent = "";
