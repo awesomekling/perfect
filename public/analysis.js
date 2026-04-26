@@ -186,27 +186,26 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
 
 // Materialize a lazy Top-Functions node's subtree. Safe to call on any node
 // (no-op if not lazy). Mutates the node.
-export function expandTopFunction(profile, node, { hideUnknown = false, focusPath = [] } = {}) {
+//
+// `inverted=false` (default) expands callees: for each sample containing
+// fid, find the innermost occurrence and walk inward to the leaf. The
+// outermost-occurrence + walk-outward symmetry is `inverted=true`, which
+// expands callers instead. Either direction guarantees descendant counts
+// are bounded by the ancestor's count, because each descendant entry
+// passes through the same single fid occurrence per sample.
+//
+// Descendants are NOT marked lazy: their children were populated on this
+// same walk. That avoids the old bug where re-expanding a child re-walked
+// *all* samples containing that child (including paths that never passed
+// through the parent top function), producing descendant costs that
+// exceeded their ancestors.
+export function expandTopFunction(profile, node, { hideUnknown = false, focusPath = [], inverted = false } = {}) {
   if (!node._lazy) return;
   node._lazy = false;
   const ctx = node._ctx;
   const { stackOffsets, stackFrames } = profile.samples;
   const fid = node._lazyFid;
   const hasFocus = focusPath.length > 0;
-  // Build the whole subtree rooted at `fid` eagerly — this is the only
-  // correct way to scope counts to "as called within this top function".
-  //
-  // For each sample containing fid, find the innermost occurrence
-  // (smallest j where stackFrames[j] === fid) and walk frames below it
-  // (towards the leaf), accumulating the call path. That guarantees
-  // every descendant's count is bounded by the ancestor's count, because
-  // each descendant entry also passes through the same fid occurrence.
-  //
-  // Descendants are NOT marked lazy: their children were populated on
-  // this same walk. That avoids the old bug where re-expanding a child
-  // re-walked *all* samples containing that child (including paths that
-  // never passed through the parent top function), producing descendant
-  // costs that exceeded their ancestors.
   for (const i of node._lazySamples) {
     const off = stackOffsets[i];
     const sampleEnd = stackOffsets[i + 1];
@@ -220,27 +219,55 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
       end = focusedJ + 1;
     }
     let k = -1;
-    for (let j = off; j < end; j++) {
-      if (stackFrames[j] === fid) { k = j; break; }
+    if (inverted) {
+      // Outermost occurrence: scan from end-1 back toward off.
+      for (let j = end - 1; j >= off; j--) {
+        if (stackFrames[j] === fid) { k = j; break; }
+      }
+    } else {
+      // Innermost occurrence: scan from off out toward end-1.
+      for (let j = off; j < end; j++) {
+        if (stackFrames[j] === fid) { k = j; break; }
+      }
     }
     if (k < 0) continue;
     let cur = node;
     let lastChild = null;
-    for (let j = k - 1; j >= off; j--) {
-      const cfid = stackFrames[j];
-      if (hideUnknown && profile.isUnknown(cfid)) continue;
-      let child = cur.children.get(cfid);
-      if (!child) {
-        child = newNode(ctx, cfid);
-        cur.children.set(cfid, child);
+    if (inverted) {
+      // Walk outward (callers).
+      for (let j = k + 1; j < end; j++) {
+        const cfid = stackFrames[j];
+        if (hideUnknown && profile.isUnknown(cfid)) continue;
+        let child = cur.children.get(cfid);
+        if (!child) {
+          child = newNode(ctx, cfid);
+          cur.children.set(cfid, child);
+        }
+        child.total++;
+        cur = child;
+        lastChild = child;
       }
-      child.total++;
-      cur = child;
-      lastChild = child;
+      // No self++ on caller chains: "self" only makes sense for leaf-side
+      // frames, and node.self (the leaf-side count of fid itself) was
+      // already set in buildTopFunctions.
+    } else {
+      // Walk inward (callees).
+      for (let j = k - 1; j >= off; j--) {
+        const cfid = stackFrames[j];
+        if (hideUnknown && profile.isUnknown(cfid)) continue;
+        let child = cur.children.get(cfid);
+        if (!child) {
+          child = newNode(ctx, cfid);
+          cur.children.set(cfid, child);
+        }
+        child.total++;
+        cur = child;
+        lastChild = child;
+      }
+      if (lastChild) lastChild.self++;
+      // If fid was the innermost frame (k === off), node.self was already
+      // counted in buildTopFunctions — don't double-count.
     }
-    if (lastChild) lastChild.self++;
-    // If fid was the innermost frame (k === off), node.self was already
-    // counted in buildTopFunctions — don't double-count.
   }
   node._lazySamples = null;
   node._ctx = null;

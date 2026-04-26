@@ -30,6 +30,8 @@ const els = {
   searchPrev: $("#search-prev"),
   searchNext: $("#search-next"),
   autoExpand: $("#auto-expand"),
+  topInverted: $("#top-inverted"),
+  topInvertedFilter: $("#top-inverted-filter"),
   splitter: $("#splitter"),
   timeline: $("#timeline"),
   treeFilters: $("#tree-filters"),
@@ -105,6 +107,7 @@ function setProfile(json, name) {
     getHideUnknown: () => els.hideUnknown.checked,
     getSearch: () => els.search.value,
     getAutoExpand: () => els.autoExpand.checked,
+    getTopInverted: () => els.topInverted.checked,
   });
   samplesView = new SamplesView({
     profile,
@@ -168,6 +171,9 @@ function applyModeUI() {
   els.treeHeaderTree.classList.toggle("hidden", samples);
   els.treeHeaderSamples.classList.toggle("hidden", !samples);
   els.sampleSidebar.classList.toggle("hidden", !samples);
+  // "Show callers" only applies to Top Functions — its expansion direction
+  // toggle. Hide elsewhere so it doesn't suggest it affects other views.
+  els.topInvertedFilter.classList.toggle("hidden", mode !== "top");
   // Breadcrumb is only meaningful for tree views. Hide now; the subsequent
   // tree refresh (if any) will re-show it if a focus is active.
   if (samples) els.focusBreadcrumbs.classList.add("hidden");
@@ -203,6 +209,7 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
+els.topInverted.addEventListener("change", () => treeView && treeView.refresh());
 els.autoExpand.addEventListener("change", () => {
   if (!treeView) return;
   treeView._currentMatch = -1; // re-anchor to first match for the new tree

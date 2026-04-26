@@ -15,7 +15,7 @@ import {
 const ROW_H = 22;
 
 export class TreeView {
-  constructor({ profile, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand }) {
+  constructor({ profile, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand, getTopInverted }) {
     this.profile = profile;
     this.scrollEl = scrollEl;
     this.treeEl = treeEl;
@@ -25,6 +25,7 @@ export class TreeView {
     this.getSearch = getSearch;
     this.getHideUnknown = getHideUnknown;
     this.getAutoExpand = getAutoExpand || (() => false);
+    this.getTopInverted = getTopInverted || (() => false);
 
     this.expanded = new Set();         // user-driven expansion (persists)
     this._searchExpanded = new Set();  // ephemeral, recomputed each refresh
@@ -283,6 +284,7 @@ export class TreeView {
             expandTopFunction(this.profile, child, {
               hideUnknown: this.getHideUnknown(),
               focusPath: this._focusPath,
+              inverted: this.getTopInverted(),
             });
           }
           flatten(child, depth + 1);
