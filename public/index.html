@@ -44,9 +44,9 @@
       <section id="bottom" class="bottom">
         <div class="bottom-toolbar">
           <div class="tabs" role="tablist">
-            <button class="tab active" data-mode="calltree">Call Tree</button>
+            <button class="tab" data-mode="calltree">Call Tree</button>
             <button class="tab" data-mode="inverted">Inverted</button>
-            <button class="tab" data-mode="top">Top Functions</button>
+            <button class="tab active" data-mode="top">Top Functions</button>
             <button class="tab" data-mode="samples">Samples</button>
           </div>
           <div class="filters" id="tree-filters">
@@ -57,7 +57,7 @@
               <button id="search-prev" class="btn-icon" title="Previous match (Shift+Enter)" aria-label="Previous">‹</button>
               <button id="search-next" class="btn-icon" title="Next match (Enter)" aria-label="Next">›</button>
             </div>
-            <label class="filter"><input type="checkbox" id="auto-expand" checked> Auto-expand</label>
+            <label class="filter"><input type="checkbox" id="auto-expand"> Auto-expand</label>
             <label class="filter hidden" id="top-inverted-filter" title="Expand each function to its callers instead of its callees"><input type="checkbox" id="top-inverted"> Show callers</label>
           </div>
           <div class="stats" id="stats"></div>

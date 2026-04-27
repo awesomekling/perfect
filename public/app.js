@@ -45,7 +45,7 @@ let profile = null;
 let timeline = null;
 let treeView = null;
 let samplesView = null;
-let mode = "calltree";
+let mode = "top";
 
 function activeView() {
   return mode === "samples" ? samplesView : treeView;
