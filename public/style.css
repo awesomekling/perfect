@@ -396,6 +396,7 @@ button { font: inherit; color: inherit; }
   color: var(--text-dim);
   margin-top: 2px;
 }
+.marks-sidebar .sidebar-opt { margin-top: 6px; }
 .marks-sidebar .sidebar-sub kbd {
   display: inline-block;
   background: #1a1a1e;

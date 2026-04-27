@@ -15,7 +15,7 @@ import {
 const ROW_H = 22;
 
 export class TreeView {
-  constructor({ profile, marks, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand, getTopInverted }) {
+  constructor({ profile, marks, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getHideMarked, getAutoExpand, getTopInverted }) {
     this.profile = profile;
     this.marks = marks || null;
     this.scrollEl = scrollEl;
@@ -25,6 +25,7 @@ export class TreeView {
     this.getFilter = getFilter;
     this.getSearch = getSearch;
     this.getHideUnknown = getHideUnknown;
+    this.getHideMarked = getHideMarked || (() => false);
     this.getAutoExpand = getAutoExpand || (() => false);
     this.getTopInverted = getTopInverted || (() => false);
 
@@ -78,13 +79,19 @@ export class TreeView {
     const hideUnknown = this.getHideUnknown();
     const search = (this.getSearch() || "").toLowerCase();
 
-    // Collect filtered sample indices once.
+    // Collect filtered sample indices once. With "hide marked" on, drop any
+    // sample whose stack contains an active mark — flips the analysis to
+    // show what *isn't* explained by the user's marks. Inactive marks
+    // already contribute 0 to sampleColorIdx, so they don't filter.
     const inRange = [];
     const { times, tids: stids } = this.profile.samples;
+    const hideMarked = this.getHideMarked();
+    const sampleColor = (hideMarked && this.marks) ? this.marks.sampleColorIdx() : null;
     for (let i = 0; i < times.length; i++) {
       const t = times[i];
       if (t < startNs || t > endNs) continue;
       if (tids && !tids.has(stids[i])) continue;
+      if (sampleColor && sampleColor[i] !== 0) continue;
       inRange.push(i);
     }
     this.totalSamples = inRange.length;

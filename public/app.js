@@ -43,6 +43,7 @@ const els = {
   marksSidebar: $("#marks-sidebar"),
   marksResizer: $("#marks-resizer"),
   marksList: $("#marks-list"),
+  hideMarked: $("#hide-marked"),
   focusBreadcrumbs: $("#focus-breadcrumbs"),
 };
 
@@ -89,6 +90,8 @@ function setProfile(json, name) {
   marks = new Marks(profile);
   marks.onChange = onMarksChanged;
 
+  const getHideMarked = () => els.hideMarked.checked;
+
   timeline = new Timeline({
     profile,
     marks,
@@ -97,6 +100,7 @@ function setProfile(json, name) {
     rulerCanvas: els.rulerCanvas,
     highlightCanvas: els.highlightCanvas,
     overlayEl: els.selectionOverlay,
+    getHideMarked,
     onChange: () => activeView() && activeView().refresh(),
     onViewChange: (isFull) => els.resetZoom.classList.toggle("hidden", isFull),
   });
@@ -116,17 +120,20 @@ function setProfile(json, name) {
     getMode: () => mode,
     getFilter,
     getHideUnknown: () => els.hideUnknown.checked,
+    getHideMarked,
     getSearch: () => els.search.value,
     getAutoExpand: () => els.autoExpand.checked,
     getTopInverted: () => els.topInverted.checked,
   });
   samplesView = new SamplesView({
     profile,
+    marks,
     scrollEl: els.treeScroll,
     treeEl: els.tree,
     statsEl: els.stats,
     sidebarEl: els.sampleSidebar,
     getFilter,
+    getHideMarked,
     getFocusPath: () => (treeView ? treeView._focusPath : []),
   });
   // onFocusChange fires at the end of every TreeView.refresh(), so it's a
@@ -161,7 +168,15 @@ function setProfile(json, name) {
 function onMarksChanged() {
   renderMarksSidebar();
   if (timeline) timeline.marksChanged();
-  if (treeView) treeView.rerenderRows();
+  // In "hide marked samples" mode the inRange composition depends on which
+  // marks are active, so a mark change requires a full refresh — not just
+  // a row re-render — to rebuild the tree. Otherwise the tree-row dots are
+  // the only thing that changed and rerenderRows is enough.
+  if (els.hideMarked.checked && activeView()) {
+    activeView().refresh();
+  } else if (treeView) {
+    treeView.rerenderRows();
+  }
 }
 
 function renderMarksSidebar() {
@@ -359,6 +374,10 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
+els.hideMarked.addEventListener("change", () => {
+  if (timeline) timeline.draw();
+  if (activeView()) activeView().refresh();
+});
 els.topInverted.addEventListener("change", () => treeView && treeView.refresh());
 els.autoExpand.addEventListener("change", () => {
   if (!treeView) return;

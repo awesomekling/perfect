@@ -9,7 +9,7 @@ const LANE_H = 26;
 const MIN_VIEW_NS = 1000; // 1 µs floor on zoom
 
 export class Timeline {
-  constructor({ profile, marks, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, onChange, onViewChange }) {
+  constructor({ profile, marks, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, getHideMarked, onChange, onViewChange }) {
     this.profile = profile;
     this.marks = marks || null;
     this.laneLabelsEl = laneLabelsEl;
@@ -17,6 +17,7 @@ export class Timeline {
     this.rulerCanvas = rulerCanvas;
     this.highlightCanvas = highlightCanvas || null;
     this.overlayEl = overlayEl;
+    this.getHideMarked = getHideMarked || (() => false);
     this.onChange = onChange;
     this.onViewChange = onViewChange;
     // Hover context from the tree, or null.
@@ -173,9 +174,15 @@ export class Timeline {
     const { times, tids, stackOffsets, stackFrames } = this.profile.samples;
     const lo = lowerBound(times, this.viewStartNs);
     const hi = upperBound(times, this.viewEndNs);
+    // Match _drawLanes: when "hide marked" is on, the lanes are painted
+    // without marked samples, so the hover overlay must also exclude them
+    // (otherwise the yellow could hover over empty lane space).
+    const hideMarked = this.getHideMarked();
+    const sampleColor = (hideMarked && this.marks) ? this.marks.sampleColorIdx() : null;
     for (let i = lo; i < hi; i++) {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
+      if (sampleColor && sampleColor[i] !== 0) continue;
       const off = stackOffsets[i];
       const end = stackOffsets[i + 1];
       // Focus matches contiguous-anywhere; local matches per mode (anchored
@@ -292,6 +299,10 @@ export class Timeline {
     // and we degenerate to the original single-color path.
     const sampleColor = this.marks ? this.marks.sampleColorIdx() : null;
     const C = (this.marks && this.marks.size() > 0) ? MARK_PALETTE.length + 1 : 1;
+    // "Hide marked samples" mode subtracts the marked-stack samples from the
+    // lanes so what's left is the unaccounted-for time. Inactive marks
+    // already contribute 0 to sampleColorIdx, so they don't subtract.
+    const hideMarked = this.getHideMarked();
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
     const tidToIdx = new Map();
@@ -304,8 +315,9 @@ export class Timeline {
     for (let i = lo; i < hi; i++) {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
-      const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
       const c = (C > 1 && sampleColor) ? sampleColor[i] : 0;
+      if (hideMarked && c !== 0) continue;
+      const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
       buckets[(li * W + px) * C + c]++;
     }
 
