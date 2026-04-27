@@ -351,6 +351,13 @@ button { font: inherit; color: inherit; }
   flex: 1;
   min-height: 0;
 }
+.tree-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
 .tree-scroll {
   flex: 1;
   overflow: auto;

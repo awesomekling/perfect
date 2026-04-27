@@ -63,21 +63,23 @@
           <div class="stats" id="stats"></div>
         </div>
         <div class="focus-breadcrumbs hidden" id="focus-breadcrumbs"></div>
-        <div class="tree-header" id="tree-header-tree">
-          <div class="col-total" id="th-total" title="Cumulative time spent in this function (including children)">Total</div>
-          <div class="col-self" id="th-self" title="Time spent directly in this function (excluding children)">Self</div>
-          <div class="col-symbol">Symbol</div>
-          <div class="col-dso">Module</div>
-        </div>
-        <div class="tree-header hidden" id="tree-header-samples">
-          <div class="col-time">Time</div>
-          <div class="col-thread">Thread</div>
-          <div class="col-symbol">Leaf function</div>
-          <div class="col-dso">Module</div>
-        </div>
         <div class="bottom-body">
-          <div class="tree-scroll" id="tree-scroll">
-            <div class="tree" id="tree"></div>
+          <div class="tree-pane">
+            <div class="tree-header" id="tree-header-tree">
+              <div class="col-total" id="th-total" title="Cumulative time spent in this function (including children)">Total</div>
+              <div class="col-self" id="th-self" title="Time spent directly in this function (excluding children)">Self</div>
+              <div class="col-symbol">Symbol</div>
+              <div class="col-dso">Module</div>
+            </div>
+            <div class="tree-header hidden" id="tree-header-samples">
+              <div class="col-time">Time</div>
+              <div class="col-thread">Thread</div>
+              <div class="col-symbol">Leaf function</div>
+              <div class="col-dso">Module</div>
+            </div>
+            <div class="tree-scroll" id="tree-scroll">
+              <div class="tree" id="tree"></div>
+            </div>
           </div>
           <aside class="marks-sidebar hidden" id="marks-sidebar">
             <div class="sidebar-header">
