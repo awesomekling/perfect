@@ -359,6 +359,118 @@ button { font: inherit; color: inherit; }
 }
 .tree { position: relative; }
 
+/* ---------- Marks sidebar ---------- */
+.marks-sidebar {
+  flex: 0 0 280px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-panel);
+  overflow: auto;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.marks-sidebar.hidden { display: none; }
+.marks-sidebar .sidebar-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #2e2e35;
+  flex: 0 0 auto;
+}
+.marks-sidebar .sidebar-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.marks-sidebar .sidebar-sub kbd {
+  display: inline-block;
+  background: #1a1a1e;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 0 5px;
+  font: var(--text-mono);
+  font-size: 10px;
+  color: var(--text);
+}
+.marks-list {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+}
+.mark-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #2c2c33;
+}
+.mark-item:hover { background: var(--bg-row-hover); }
+.mark-swatch {
+  width: 16px; height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.4);
+  flex: 0 0 auto;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.05);
+}
+.mark-swatch:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
+.mark-text {
+  flex: 1;
+  min-width: 0;
+}
+.mark-sym {
+  font: var(--text-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.mark-dso {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.mark-del {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  width: 20px; height: 20px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+.mark-del:hover { background: #45454f; color: var(--text); }
+
+.color-popover {
+  position: fixed;
+  z-index: 50;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 6px;
+  display: grid;
+  grid-template-columns: repeat(5, 20px);
+  gap: 6px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+.color-popover .color-cell {
+  width: 20px; height: 20px;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.4);
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+}
+.color-popover .color-cell:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.3); }
+.color-popover .color-cell.selected { box-shadow: 0 0 0 2px var(--accent); }
+
 /* ---------- Sample sidebar ---------- */
 .sample-sidebar {
   flex: 0 0 380px;
@@ -480,6 +592,24 @@ button { font: inherit; color: inherit; }
   user-select: none;
 }
 .tree-row .twisty.expandable { cursor: pointer; color: var(--text); }
+.tree-row .mark-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin: 0 6px 0 2px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+}
+.tree-row.marked::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--mark-color, transparent);
+  opacity: 0.08;
+  pointer-events: none;
+  z-index: 0;
+}
 .tree-row .sym {
   white-space: nowrap;
   overflow: hidden;

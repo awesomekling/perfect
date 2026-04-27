@@ -15,8 +15,9 @@ import {
 const ROW_H = 22;
 
 export class TreeView {
-  constructor({ profile, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand, getTopInverted }) {
+  constructor({ profile, marks, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getAutoExpand, getTopInverted }) {
     this.profile = profile;
+    this.marks = marks || null;
     this.scrollEl = scrollEl;
     this.treeEl = treeEl;
     this.statsEl = statsEl;
@@ -317,6 +318,21 @@ export class TreeView {
     this.treeEl.style.height = (rows.length * ROW_H) + "px";
   }
 
+  // Lighter than refresh(): re-paint the visible rows without rebuilding the
+  // tree. Used when only the visual layer needs updating (e.g. mark colors).
+  rerenderRows() {
+    if (this._attached) this._renderVisible();
+  }
+
+  // The fid of the currently-selected tree row, or null when nothing is
+  // selected or the selection is on the synthetic [truncated] row.
+  selectedFid() {
+    const r = this.flatRows[this._selectedIdx];
+    if (!r || !r.node) return null;
+    if (r.node.fid === TRUNCATED_FID) return null;
+    return r.node.fid;
+  }
+
   // ----- Keyboard navigation -----
   selectAt(idx) {
     if (this.flatRows.length === 0) return;
@@ -456,7 +472,10 @@ export class TreeView {
       const labelHtml = isMatch ? highlightMatch(label, search) : escapeHtml(label);
       const isCurrent = i === currentMatchRowIdx;
       const isSelected = i === this._selectedIdx;
-      const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}${isSelected ? " selected" : ""}`;
+      const markColor = (!isTruncated && this.marks) ? this.marks.color(fid) : null;
+      const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}${isSelected ? " selected" : ""}${markColor ? " marked" : ""}`;
+      const markStyle = markColor ? ` --mark-color:${markColor};` : "";
+      const markDotHtml = markColor ? `<span class="mark-dot" style="background:${markColor}" title="Marked"></span>` : "";
       const totalTxt = profile.timeKnown
         ? fmtTimeShort(node.total * profile.nsPerSample)
         : node.total.toLocaleString();
@@ -470,7 +489,7 @@ export class TreeView {
         ? `${node.self.toLocaleString()} samples · ${fmtTimeShort(node.self * profile.nsPerSample)} (${selfPct.toFixed(2)}%)`
         : `${node.self.toLocaleString()} samples (${selfPct.toFixed(2)}%)`;
       html += `
-        <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;">
+        <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;${markStyle}">
           <div class="col-total" title="${totalTip}">
             <span class="bar" style="width:${pct.toFixed(2)}%"></span>
             <span class="num">${totalTxt} <span class="pct">${pct.toFixed(1)}%</span></span>
@@ -481,7 +500,7 @@ export class TreeView {
           </div>
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
-            <span class="sym ${isUnknown ? "unknown" : ""} ${isTruncated ? "truncated" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
+            ${markDotHtml}<span class="sym ${isUnknown ? "unknown" : ""} ${isTruncated ? "truncated" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>
           </div>
           <div class="col-dso" title="${escapeHtml(dsoFull)}">${escapeHtml(dso)}</div>
         </div>

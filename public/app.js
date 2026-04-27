@@ -2,6 +2,7 @@ import { Profile, fmtMs, fmtTimeShort } from "./profile.js";
 import { Timeline } from "./timeline.js";
 import { TreeView } from "./treeview.js";
 import { SamplesView } from "./samplesview.js";
+import { Marks, PALETTE as MARK_PALETTE } from "./marks.js";
 
 const $ = (s) => document.querySelector(s);
 
@@ -38,6 +39,8 @@ const els = {
   treeHeaderTree: $("#tree-header-tree"),
   treeHeaderSamples: $("#tree-header-samples"),
   sampleSidebar: $("#sample-sidebar"),
+  marksSidebar: $("#marks-sidebar"),
+  marksList: $("#marks-list"),
   focusBreadcrumbs: $("#focus-breadcrumbs"),
 };
 
@@ -45,6 +48,7 @@ let profile = null;
 let timeline = null;
 let treeView = null;
 let samplesView = null;
+let marks = null;
 let mode = "top";
 
 function activeView() {
@@ -80,8 +84,12 @@ function setProfile(json, name) {
   const freq = profile.meta.sampleFreq ? ` @ ${profile.meta.sampleFreq} Hz` : "";
   els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples${onCpu} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
 
+  marks = new Marks(profile);
+  marks.onChange = onMarksChanged;
+
   timeline = new Timeline({
     profile,
+    marks,
     laneLabelsEl: els.laneLabels,
     lanesCanvas: els.lanesCanvas,
     rulerCanvas: els.rulerCanvas,
@@ -99,6 +107,7 @@ function setProfile(json, name) {
 
   treeView = new TreeView({
     profile,
+    marks,
     scrollEl: els.treeScroll,
     treeEl: els.tree,
     statsEl: els.stats,
@@ -138,6 +147,98 @@ function setProfile(json, name) {
   };
   applyModeUI();
   activeView().refresh();
+  renderMarksSidebar();
+}
+
+function onMarksChanged() {
+  renderMarksSidebar();
+  if (timeline) timeline.marksChanged();
+  if (treeView) treeView.rerenderRows();
+}
+
+function renderMarksSidebar() {
+  const list = marks ? marks.list() : [];
+  // Sidebar is meaningful only in tree modes; samples mode owns the right-hand
+  // slot for its own sidebar. Hidden when there's nothing marked yet.
+  const visible = list.length > 0 && mode !== "samples";
+  els.marksSidebar.classList.toggle("hidden", !visible);
+  if (!visible) {
+    closeColorPopover();
+    els.marksList.innerHTML = "";
+    return;
+  }
+  let html = "";
+  for (const m of list) {
+    const label = profile.funcLabel(m.fid);
+    const dso = profile.funcDsoShort(m.fid);
+    html += `
+      <div class="mark-item" data-fid="${m.fid}">
+        <button class="mark-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
+        <div class="mark-text">
+          <div class="mark-sym" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+          <div class="mark-dso" title="${escapeHtml(dso)}">${escapeHtml(dso)}</div>
+        </div>
+        <button class="mark-del" data-del="1" title="Remove mark">×</button>
+      </div>`;
+  }
+  els.marksList.innerHTML = html;
+  for (const item of els.marksList.children) {
+    const fid = +item.dataset.fid;
+    item.querySelector("[data-swatch]").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openColorPopover(fid, e.currentTarget);
+    });
+    item.querySelector("[data-del]").addEventListener("click", (e) => {
+      e.stopPropagation();
+      marks.remove(fid);
+    });
+  }
+}
+
+let colorPopoverEl = null;
+function openColorPopover(fid, anchorEl) {
+  closeColorPopover();
+  const cur = marks.get(fid);
+  if (!cur) return;
+  const pop = document.createElement("div");
+  pop.className = "color-popover";
+  let html = "";
+  for (let i = 0; i < MARK_PALETTE.length; i++) {
+    const sel = i === cur.paletteIdx ? " selected" : "";
+    html += `<button class="color-cell${sel}" data-idx="${i}" style="background:${MARK_PALETTE[i]}" title="${MARK_PALETTE[i]}"></button>`;
+  }
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  // Position below+left of the swatch, clamped to viewport.
+  const r = anchorEl.getBoundingClientRect();
+  const pr = pop.getBoundingClientRect();
+  let left = r.left;
+  let top = r.bottom + 4;
+  const margin = 6;
+  if (left + pr.width + margin > window.innerWidth) left = window.innerWidth - pr.width - margin;
+  if (top + pr.height + margin > window.innerHeight) top = r.top - pr.height - 4;
+  pop.style.left = Math.max(margin, left) + "px";
+  pop.style.top  = Math.max(margin, top)  + "px";
+  for (const cell of pop.children) {
+    cell.addEventListener("click", (e) => {
+      e.stopPropagation();
+      marks.setColor(fid, +cell.dataset.idx);
+      closeColorPopover();
+    });
+  }
+  colorPopoverEl = pop;
+  // Defer the outside-click listener so this same click doesn't immediately
+  // close the popover we just opened.
+  setTimeout(() => document.addEventListener("mousedown", onDocMouseDownForPopover), 0);
+}
+function closeColorPopover() {
+  if (!colorPopoverEl) return;
+  colorPopoverEl.remove();
+  colorPopoverEl = null;
+  document.removeEventListener("mousedown", onDocMouseDownForPopover);
+}
+function onDocMouseDownForPopover(e) {
+  if (colorPopoverEl && !colorPopoverEl.contains(e.target)) closeColorPopover();
 }
 
 function renderFocusBreadcrumbs(crumbs) {
@@ -186,6 +287,9 @@ function applyModeUI() {
   els.tree.innerHTML = "";
   els.tree.style.height = "0px";
   els.treeScroll.scrollTop = 0;
+  // Marks sidebar shares the right-hand slot with the samples sidebar; only
+  // one is shown at a time, and it stays hidden when there are no marks yet.
+  renderMarksSidebar();
 }
 
 function showLoading(text) {
@@ -263,6 +367,12 @@ window.addEventListener("keydown", (e) => {
     case "/":          if (mode !== "samples") { e.preventDefault(); els.search.focus(); els.search.select(); } break;
     case "f": case "F":
       if (mode !== "samples") { e.preventDefault(); treeView.focusSelected(); }
+      break;
+    case "m": case "M":
+      if (mode !== "samples" && marks) {
+        const fid = treeView.selectedFid();
+        if (fid != null) { e.preventDefault(); marks.toggle(fid); }
+      }
       break;
     case "0":          if (timeline) { e.preventDefault(); timeline.resetView(); } break;
     case "+":

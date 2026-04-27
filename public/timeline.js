@@ -3,13 +3,15 @@
 // Wheel pans, Ctrl/Cmd+wheel zooms around the cursor.
 
 import { fmtMs } from "./profile.js";
+import { PALETTE as MARK_PALETTE } from "./marks.js";
 
 const LANE_H = 26;
 const MIN_VIEW_NS = 1000; // 1 µs floor on zoom
 
 export class Timeline {
-  constructor({ profile, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, onChange, onViewChange }) {
+  constructor({ profile, marks, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, onChange, onViewChange }) {
     this.profile = profile;
+    this.marks = marks || null;
     this.laneLabelsEl = laneLabelsEl;
     this.lanesCanvas = lanesCanvas;
     this.rulerCanvas = rulerCanvas;
@@ -133,6 +135,12 @@ export class Timeline {
     this._drawHighlight();
     this._drawSelection();
     if (this.onViewChange) this.onViewChange(this.isFullView());
+  }
+
+  // Called whenever the mark set changes. Lane bars are colored from the
+  // per-sample mark map, so we have to redraw the lanes (not just overlays).
+  marksChanged() {
+    this.draw();
   }
 
   // Called from the tree view on hover (debounced). `ctx` is
@@ -279,12 +287,16 @@ export class Timeline {
       ctx.fillRect(0, y + LANE_H - 1, w, 1);
     }
 
-    // Bucket visible samples per-lane per-pixel by binary-searching the time array.
+    // Bucket visible samples per-lane per-pixel per-color. C = unmarked + N
+    // palette colors; if there are no marks (or no Marks instance), C is 1
+    // and we degenerate to the original single-color path.
+    const sampleColor = this.marks ? this.marks.sampleColorIdx() : null;
+    const C = (this.marks && this.marks.size() > 0) ? MARK_PALETTE.length + 1 : 1;
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
     const tidToIdx = new Map();
     this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
-    const buckets = new Uint32Array(W * L);
+    const buckets = new Uint32Array(W * L * C);
     const span = Math.max(1, this.viewEndNs - this.viewStartNs);
     const { times, tids } = this.profile.samples;
     const lo = lowerBound(times, this.viewStartNs);
@@ -293,7 +305,8 @@ export class Timeline {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
       const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
-      buckets[li * W + px]++;
+      const c = (C > 1 && sampleColor) ? sampleColor[i] : 0;
+      buckets[(li * W + px) * C + c]++;
     }
 
     // Absolute density: each pixel column covers `pixelTimeNs` of wall time, and
@@ -309,15 +322,35 @@ export class Timeline {
       const lane = this.lanes[li];
       const y = li * LANE_H;
       const baseY = y + 3, barH = LANE_H - 6;
-      ctx.fillStyle = lane.color;
-      ctx.globalAlpha = 0.85;
-      const rowOff = li * W;
+      const rowOff = (li * W) * C;
       for (let px = 0; px < W; px++) {
-        const n = buckets[rowOff + px];
-        if (n === 0) continue;
-        const v = Math.min(1, n / maxPerPixel);
+        // Total count across colors in this pixel column.
+        let total = 0;
+        for (let c = 0; c < C; c++) total += buckets[rowOff + px * C + c];
+        if (total === 0) continue;
+        const v = Math.min(1, total / maxPerPixel);
         const bh = Math.max(1, v * barH);
-        ctx.fillRect(px, baseY + (barH - bh), 1, bh);
+        // Stack from the bottom up: mark colors anchor at the lane floor
+        // (so they read as the "narrative paint"), with unmarked lane color
+        // layered above.
+        let stackBottom = baseY + barH;
+        for (let c = 1; c < C; c++) {
+          const n = buckets[rowOff + px * C + c];
+          if (n === 0) continue;
+          const sh = (n / total) * bh;
+          ctx.fillStyle = MARK_PALETTE[c - 1];
+          ctx.globalAlpha = 1;
+          ctx.fillRect(px, stackBottom - sh, 1, sh);
+          stackBottom -= sh;
+        }
+        const nUnmarked = buckets[rowOff + px * C + 0];
+        if (nUnmarked > 0) {
+          const sh = (nUnmarked / total) * bh;
+          ctx.fillStyle = lane.color;
+          ctx.globalAlpha = 0.85;
+          ctx.fillRect(px, stackBottom - sh, 1, sh);
+          stackBottom -= sh;
+        }
       }
       ctx.globalAlpha = 1;
 
