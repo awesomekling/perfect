@@ -1,6 +1,10 @@
-// User-curated marks: a set of "interesting" function ids each painted with a
+// User-curated marks: a set of "interesting" functions each painted with a
 // color from a fixed palette. Drives the marks sidebar, the per-sample color
 // used to paint the timeline lanes, and the colored dot in tree rows.
+//
+// Marks are persisted to localStorage and keyed on (symbol, dso-basename) —
+// not fid, which is profile-local. So a mark on Heap::collect_garbage
+// survives reloads and re-recordings of the same program.
 //
 // The "innermost wins" rule is encoded in `sampleColorIdx()` — for each
 // sample we walk the stack inner→outer (its native order) and stop at the
@@ -19,12 +23,20 @@ export const PALETTE = [
   "#e8e8ea", // off-white
 ];
 
+const STORAGE_KEY = "perfect.marks.v1";
+
+// Specs that don't resolve to any fid in the current profile are kept around
+// (so switching to a different profile doesn't drop them) — joined back into
+// `byFid` next time a profile that *does* contain that symbol gets loaded.
+
 export class Marks {
   constructor(profile) {
     this.profile = profile;
-    this.byFid = new Map(); // fid -> { color, paletteIdx }
-    this._sampleColorIdx = null; // Uint8Array, 0 = unmarked, else paletteIdx+1
+    this.byFid = new Map();          // fid -> { color, paletteIdx, specIdx }
+    this.specs = [];                 // [{ sym, dso, paletteIdx }] — source of truth
+    this._sampleColorIdx = null;     // Uint8Array, 0 = unmarked, else paletteIdx+1
     this.onChange = null;
+    this._loadFromStorage();
   }
 
   size() { return this.byFid.size; }
@@ -32,11 +44,15 @@ export class Marks {
   get(fid) { return this.byFid.get(fid) || null; }
   color(fid) { const m = this.byFid.get(fid); return m ? m.color : null; }
 
-  // Iteration order = insertion order (Map semantics); the sidebar relies on
-  // this so newly-marked rows append at the bottom.
+  // Iteration order = insertion order on `specs`; the sidebar relies on
+  // this so newly-marked rows append at the bottom across reloads too.
   list() {
     const out = [];
-    for (const [fid, m] of this.byFid) out.push({ fid, color: m.color, paletteIdx: m.paletteIdx });
+    for (const s of this.specs) {
+      const fid = this._symKeyToFid().get(makeKey(s.sym, s.dso));
+      if (fid === undefined) continue;
+      out.push({ fid, sym: s.sym, dso: s.dso, color: PALETTE[s.paletteIdx], paletteIdx: s.paletteIdx });
+    }
     return out;
   }
 
@@ -47,13 +63,30 @@ export class Marks {
 
   add(fid) {
     if (this.byFid.has(fid)) return;
-    const idx = this._nextPaletteIdx();
-    this.byFid.set(fid, { color: PALETTE[idx], paletteIdx: idx });
+    const sym = this.profile.funcLabel(fid);
+    const dso = this.profile.funcDsoShort(fid);
+    // If a spec for this sym+dso already exists from a previous session,
+    // adopt its color rather than picking a fresh palette slot.
+    const existingIdx = this.specs.findIndex((s) => s.sym === sym && s.dso === dso);
+    let paletteIdx;
+    if (existingIdx >= 0) {
+      paletteIdx = this.specs[existingIdx].paletteIdx;
+    } else {
+      paletteIdx = this._nextPaletteIdx();
+      this.specs.push({ sym, dso, paletteIdx });
+    }
+    this.byFid.set(fid, { color: PALETTE[paletteIdx], paletteIdx });
     this._invalidate();
   }
 
   remove(fid) {
-    if (!this.byFid.delete(fid)) return;
+    const m = this.byFid.get(fid);
+    if (!m) return;
+    const sym = this.profile.funcLabel(fid);
+    const dso = this.profile.funcDsoShort(fid);
+    const idx = this.specs.findIndex((s) => s.sym === sym && s.dso === dso);
+    if (idx >= 0) this.specs.splice(idx, 1);
+    this.byFid.delete(fid);
     this._invalidate();
   }
 
@@ -63,15 +96,19 @@ export class Marks {
     if (m.paletteIdx === paletteIdx) return;
     m.paletteIdx = paletteIdx;
     m.color = PALETTE[paletteIdx];
+    const sym = this.profile.funcLabel(fid);
+    const dso = this.profile.funcDsoShort(fid);
+    const spec = this.specs.find((s) => s.sym === sym && s.dso === dso);
+    if (spec) spec.paletteIdx = paletteIdx;
     this._invalidate();
   }
 
   // Pick a palette slot not in use yet; once all 10 are used, cycle.
   _nextPaletteIdx() {
     const used = new Set();
-    for (const m of this.byFid.values()) used.add(m.paletteIdx);
+    for (const s of this.specs) used.add(s.paletteIdx);
     for (let i = 0; i < PALETTE.length; i++) if (!used.has(i)) return i;
-    return this.byFid.size % PALETTE.length;
+    return this.specs.length % PALETTE.length;
   }
 
   // Per-sample mark color, derived from the current mark set. 0 means the
@@ -103,8 +140,54 @@ export class Marks {
     return arr;
   }
 
+  _symKeyToFid() {
+    if (this._symKeyCache) return this._symKeyCache;
+    const out = new Map();
+    const { functions } = this.profile;
+    for (let fid = 0; fid < functions.length; fid++) {
+      const key = makeKey(this.profile.funcLabel(fid), this.profile.funcDsoShort(fid));
+      // First wins: in the rare case of duplicate (sym, dso) pairs we mark
+      // the first matching fid. Either is fine for the user's narrative.
+      if (!out.has(key)) out.set(key, fid);
+    }
+    this._symKeyCache = out;
+    return out;
+  }
+
+  _loadFromStorage() {
+    let raw;
+    try { raw = localStorage.getItem(STORAGE_KEY); } catch { return; }
+    if (!raw) return;
+    let arr;
+    try { arr = JSON.parse(raw); } catch { return; }
+    if (!Array.isArray(arr)) return;
+    const N = PALETTE.length;
+    this.specs = arr
+      .filter((x) => x && typeof x.sym === "string" && typeof x.dso === "string" && Number.isInteger(x.paletteIdx))
+      .map((x) => ({ sym: x.sym, dso: x.dso, paletteIdx: ((x.paletteIdx % N) + N) % N }));
+    // Resolve specs that exist in this profile to fids.
+    const lookup = this._symKeyToFid();
+    for (const s of this.specs) {
+      const fid = lookup.get(makeKey(s.sym, s.dso));
+      if (fid !== undefined) {
+        this.byFid.set(fid, { color: PALETTE[s.paletteIdx], paletteIdx: s.paletteIdx });
+      }
+    }
+  }
+
+  _saveToStorage() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.specs)); } catch {}
+  }
+
   _invalidate() {
     this._sampleColorIdx = null;
+    this._saveToStorage();
     if (this.onChange) this.onChange();
   }
+}
+
+function makeKey(sym, dso) {
+  // \u0001 is unlikely to appear in any symbol or dso name and gives an
+  // unambiguous separator between the two halves of the key.
+  return `${sym}\u0001${dso}`;
 }
