@@ -246,6 +246,17 @@ export class TreeView {
     }, 75);
   }
 
+  // Drop any pending debounced hover update without firing it. Used when
+  // another source (e.g. the marks sidebar) is taking over the timeline
+  // highlight and would otherwise be clobbered by our 75ms-late clear.
+  cancelPendingHover() {
+    if (this._hoverTimer) {
+      clearTimeout(this._hoverTimer);
+      this._hoverTimer = null;
+    }
+    this._pendingHoverIdx = null;
+  }
+
   _buildFlatRows() {
     const rows = [];
     const search = (this._search || "").toLowerCase();

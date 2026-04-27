@@ -193,6 +193,18 @@ function renderMarksSidebar() {
       e.stopPropagation();
       marks.remove(fid);
     });
+    // Hovering a mark in the sidebar highlights every sample whose stack
+    // contains the marked function — same yellow overlay used by tree-row
+    // hover. Cancel the tree's pending debounced clear first, otherwise its
+    // mouseleave-scheduled null would arrive 75ms later and wipe us out.
+    item.addEventListener("mouseenter", () => {
+      if (!timeline) return;
+      if (treeView) treeView.cancelPendingHover();
+      timeline.setHoverChain({ focus: [], local: [fid], mode: "calltree", hideUnknown: false });
+    });
+    item.addEventListener("mouseleave", () => {
+      if (timeline) timeline.setHoverChain(null);
+    });
   }
 }
 
