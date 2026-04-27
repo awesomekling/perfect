@@ -453,6 +453,17 @@ button { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.mark-stats {
+  flex: 0 0 auto;
+  text-align: right;
+  font: var(--text-mono);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.mark-stats .mark-total-pct { color: var(--text); }
+.mark-stats .mark-self-pct  { font-size: 10px; }
+.mark-item.inactive .mark-stats { opacity: 0.4; }
 .mark-del {
   background: transparent;
   border: none;

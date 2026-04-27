@@ -195,6 +195,58 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
 // passes through the same single fid occurrence per sample.
 //
 // Descendants are NOT marked lazy: their children were populated on this
+// Per-fid total/self counts for a small set of marked fids over the given
+// filtered samples. Mirrors buildTopFunctions semantics — recursion-deduped
+// totals, leaf counted at the actual stack innermost, focus-path scoped —
+// but skips the tree build since the marks sidebar only needs scalars for
+// ~10 fids. `denom` is the number of samples that survived focus filtering
+// (matches Top Functions' percentage denominator).
+export function computeMarkStats(profile, markedFids, { sampleIdxs, hideUnknown = false, focusPath = [] } = {}) {
+  const perFid = new Map();
+  for (const fid of markedFids) perFid.set(fid, { total: 0, self: 0 });
+  if (markedFids.length === 0 || !sampleIdxs || sampleIdxs.length === 0) {
+    return { denom: 0, perFid };
+  }
+  const F = profile.functions.length;
+  const isMarked = new Uint8Array(F);
+  for (const fid of markedFids) if (fid >= 0 && fid < F) isMarked[fid] = 1;
+  const totals = new Int32Array(F);
+  const selfs = new Int32Array(F);
+  const seenStamp = new Int32Array(F);
+  let stamp = 0;
+  const { stackOffsets, stackFrames } = profile.samples;
+  const hasFocus = focusPath.length > 0;
+  let denom = 0;
+  for (const i of sampleIdxs) {
+    stamp++;
+    const off = stackOffsets[i];
+    const sampleEnd = stackOffsets[i + 1];
+    let end = sampleEnd;
+    if (hasFocus) {
+      const focusedJ = findFocusJ(stackFrames, off, sampleEnd, focusPath);
+      if (focusedJ < 0) continue;
+      end = focusedJ + 1;
+    }
+    denom++;
+    if (end > off) {
+      const leaf = stackFrames[off];
+      if (isMarked[leaf] && !(hideUnknown && profile.isUnknown(leaf))) selfs[leaf]++;
+    }
+    for (let j = off; j < end; j++) {
+      const fid = stackFrames[j];
+      if (!isMarked[fid]) continue;
+      if (hideUnknown && profile.isUnknown(fid)) continue;
+      if (seenStamp[fid] === stamp) continue;
+      seenStamp[fid] = stamp;
+      totals[fid]++;
+    }
+  }
+  for (const fid of markedFids) {
+    if (fid >= 0 && fid < F) perFid.set(fid, { total: totals[fid], self: selfs[fid] });
+  }
+  return { denom, perFid };
+}
+
 // same walk. That avoids the old bug where re-expanding a child re-walked
 // *all* samples containing that child (including paths that never passed
 // through the parent top function), producing descendant costs that

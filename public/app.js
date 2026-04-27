@@ -3,6 +3,7 @@ import { Timeline } from "./timeline.js";
 import { TreeView } from "./treeview.js";
 import { SamplesView } from "./samplesview.js";
 import { Marks, PALETTE as MARK_PALETTE } from "./marks.js";
+import { filterSampleIndices, computeMarkStats } from "./analysis.js";
 
 const $ = (s) => document.querySelector(s);
 
@@ -128,7 +129,13 @@ function setProfile(json, name) {
     getFilter,
     getFocusPath: () => (treeView ? treeView._focusPath : []),
   });
-  treeView.onFocusChange = renderFocusBreadcrumbs;
+  // onFocusChange fires at the end of every TreeView.refresh(), so it's a
+  // convenient hook for any sidebar state that needs to reflect the current
+  // view scope (filter window, focus path, hideUnknown).
+  treeView.onFocusChange = (crumbs) => {
+    renderFocusBreadcrumbs(crumbs);
+    renderMarksSidebar();
+  };
   treeView.onHoverChange = (ctx) => timeline && timeline.setHoverChain(ctx);
   treeView.onMatchesChange = (cur, total) => {
     if (!els.search.value) {
@@ -168,18 +175,38 @@ function renderMarksSidebar() {
     els.marksList.innerHTML = "";
     return;
   }
+  // Inclusive/self percentages over the same scope the Top tab uses: current
+  // timeline selection × thread filter × focus path × hide-unknown. Stats
+  // are recomputed on every refresh, but with ~10 marks and a single linear
+  // pass this is cheap.
+  const filter = timeline
+    ? { startNs: timeline.selStartNs, endNs: timeline.selEndNs, tids: timeline.selectedTids }
+    : {};
+  const sampleIdxs = filterSampleIndices(profile, filter);
+  const focusPath = treeView ? treeView._focusPath : [];
+  const hideUnknown = els.hideUnknown.checked;
+  const stats = computeMarkStats(profile, list.map((m) => m.fid), { sampleIdxs, hideUnknown, focusPath });
+
   let html = "";
   for (const m of list) {
     const label = profile.funcLabel(m.fid);
     const dso = profile.funcDsoShort(m.fid);
     const cls = m.active ? "mark-item" : "mark-item inactive";
     const titleHint = m.active ? "Click to hide from timeline" : "Click to show in timeline";
+    const s = stats.perFid.get(m.fid) || { total: 0, self: 0 };
+    const totalPct = stats.denom ? (100 * s.total / stats.denom) : 0;
+    const selfPct  = stats.denom ? (100 * s.self  / stats.denom) : 0;
+    const statsTip = `${totalPct.toFixed(2)}% inclusive · ${selfPct.toFixed(2)}% self · ${s.total.toLocaleString()} of ${stats.denom.toLocaleString()} samples`;
     html += `
       <div class="${cls}" data-fid="${m.fid}" title="${titleHint}">
         <button class="mark-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
         <div class="mark-text">
           <div class="mark-sym" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
           <div class="mark-dso" title="${escapeHtml(dso)}">${escapeHtml(dso)}</div>
+        </div>
+        <div class="mark-stats" title="${statsTip}">
+          <div class="mark-total-pct">${totalPct.toFixed(1)}%</div>
+          <div class="mark-self-pct">${selfPct.toFixed(1)}%</div>
         </div>
         <button class="mark-del" data-del="1" title="Remove mark">×</button>
       </div>`;
