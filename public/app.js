@@ -172,8 +172,10 @@ function renderMarksSidebar() {
   for (const m of list) {
     const label = profile.funcLabel(m.fid);
     const dso = profile.funcDsoShort(m.fid);
+    const cls = m.active ? "mark-item" : "mark-item inactive";
+    const titleHint = m.active ? "Click to hide from timeline" : "Click to show in timeline";
     html += `
-      <div class="mark-item" data-fid="${m.fid}">
+      <div class="${cls}" data-fid="${m.fid}" title="${titleHint}">
         <button class="mark-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
         <div class="mark-text">
           <div class="mark-sym" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
@@ -193,6 +195,10 @@ function renderMarksSidebar() {
       e.stopPropagation();
       marks.remove(fid);
     });
+    // Click on the row body (not the swatch or × button) toggles whether
+    // this mark contributes to timeline lane coloring. The mark stays in
+    // the sidebar either way.
+    item.addEventListener("click", () => marks.toggleActive(fid));
     // Hovering a mark in the sidebar highlights every sample whose stack
     // contains the marked function — same yellow overlay used by tree-row
     // hover. Cancel the tree's pending debounced clear first, otherwise its

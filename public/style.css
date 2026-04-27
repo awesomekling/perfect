@@ -418,8 +418,11 @@ button { font: inherit; color: inherit; }
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid #2c2c33;
+  cursor: pointer;
 }
 .mark-item:hover { background: var(--bg-row-hover); }
+.mark-item.inactive .mark-swatch,
+.mark-item.inactive .mark-text { opacity: 0.4; }
 .mark-swatch {
   width: 16px; height: 16px;
   border-radius: 3px;

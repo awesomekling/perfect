@@ -38,8 +38,8 @@ const STORAGE_KEY = "perfect.marks.v1";
 export class Marks {
   constructor(profile) {
     this.profile = profile;
-    this.byFid = new Map();          // fid -> { color, paletteIdx, specIdx }
-    this.specs = [];                 // [{ sym, dso, paletteIdx }] — source of truth
+    this.byFid = new Map();          // fid -> { color, paletteIdx, active }
+    this.specs = [];                 // [{ sym, dso, paletteIdx, active }] — source of truth
     this._sampleColorIdx = null;     // Uint8Array, 0 = unmarked, else paletteIdx+1
     this.onChange = null;
     this._loadFromStorage();
@@ -49,6 +49,7 @@ export class Marks {
   has(fid) { return this.byFid.has(fid); }
   get(fid) { return this.byFid.get(fid) || null; }
   color(fid) { const m = this.byFid.get(fid); return m ? m.color : null; }
+  isActive(fid) { const m = this.byFid.get(fid); return !!(m && m.active); }
 
   // Iteration order = insertion order on `specs`; the sidebar relies on
   // this so newly-marked rows append at the bottom across reloads too.
@@ -57,7 +58,7 @@ export class Marks {
     for (const s of this.specs) {
       const fid = this._symKeyToFid().get(makeKey(s.sym, s.dso));
       if (fid === undefined) continue;
-      out.push({ fid, sym: s.sym, dso: s.dso, color: PALETTE[s.paletteIdx], paletteIdx: s.paletteIdx });
+      out.push({ fid, sym: s.sym, dso: s.dso, color: PALETTE[s.paletteIdx], paletteIdx: s.paletteIdx, active: s.active });
     }
     return out;
   }
@@ -72,16 +73,19 @@ export class Marks {
     const sym = this.profile.funcLabel(fid);
     const dso = this.profile.funcDsoShort(fid);
     // If a spec for this sym+dso already exists from a previous session,
-    // adopt its color rather than picking a fresh palette slot.
+    // adopt its color rather than picking a fresh palette slot. Re-marking
+    // also flips it back on — a user explicitly marking again expects it
+    // to participate in the timeline coloring.
     const existingIdx = this.specs.findIndex((s) => s.sym === sym && s.dso === dso);
     let paletteIdx;
     if (existingIdx >= 0) {
       paletteIdx = this.specs[existingIdx].paletteIdx;
+      this.specs[existingIdx].active = true;
     } else {
       paletteIdx = this._nextPaletteIdx();
-      this.specs.push({ sym, dso, paletteIdx });
+      this.specs.push({ sym, dso, paletteIdx, active: true });
     }
-    this.byFid.set(fid, { color: PALETTE[paletteIdx], paletteIdx });
+    this.byFid.set(fid, { color: PALETTE[paletteIdx], paletteIdx, active: true });
     this._invalidate();
   }
 
@@ -109,6 +113,20 @@ export class Marks {
     this._invalidate();
   }
 
+  // Toggle whether a mark contributes to timeline lane coloring. Inactive
+  // marks remain in the sidebar (and keep their assigned color) so the user
+  // can flip them back on without losing the slot or palette assignment.
+  toggleActive(fid) {
+    const m = this.byFid.get(fid);
+    if (!m) return;
+    m.active = !m.active;
+    const sym = this.profile.funcLabel(fid);
+    const dso = this.profile.funcDsoShort(fid);
+    const spec = this.specs.find((s) => s.sym === sym && s.dso === dso);
+    if (spec) spec.active = m.active;
+    this._invalidate();
+  }
+
   // Pick a palette slot not in use yet; once all 10 are used, cycle.
   _nextPaletteIdx() {
     const used = new Set();
@@ -130,6 +148,7 @@ export class Marks {
       const F = this.profile.functions.length;
       const fidToColor = new Uint8Array(F); // 0 = unmarked
       for (const [fid, m] of this.byFid) {
+        if (!m.active) continue;
         if (fid >= 0 && fid < F) fidToColor[fid] = m.paletteIdx + 1;
       }
       for (let i = 0; i < times.length; i++) {
@@ -170,13 +189,14 @@ export class Marks {
     const N = PALETTE.length;
     this.specs = arr
       .filter((x) => x && typeof x.sym === "string" && typeof x.dso === "string" && Number.isInteger(x.paletteIdx))
-      .map((x) => ({ sym: x.sym, dso: x.dso, paletteIdx: ((x.paletteIdx % N) + N) % N }));
+      // `active` is a later addition; pre-existing entries default to true.
+      .map((x) => ({ sym: x.sym, dso: x.dso, paletteIdx: ((x.paletteIdx % N) + N) % N, active: x.active !== false }));
     // Resolve specs that exist in this profile to fids.
     const lookup = this._symKeyToFid();
     for (const s of this.specs) {
       const fid = lookup.get(makeKey(s.sym, s.dso));
       if (fid !== undefined) {
-        this.byFid.set(fid, { color: PALETTE[s.paletteIdx], paletteIdx: s.paletteIdx });
+        this.byFid.set(fid, { color: PALETTE[s.paletteIdx], paletteIdx: s.paletteIdx, active: s.active });
       }
     }
   }
