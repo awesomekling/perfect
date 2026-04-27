@@ -604,13 +604,13 @@ function upperBound(arr, v) {
   return lo;
 }
 
-function laneColor(i) {
-  const palette = [
-    "#4ea1ff", "#ff7a59", "#7ad991", "#ffd24e",
-    "#c08fff", "#5ce0d4", "#ff8fb1", "#a4ce5a",
-    "#69c8e0", "#ffb74e", "#9aa5ff", "#ff9b87",
-  ];
-  return palette[i % palette.length];
+// Every lane is painted in the accent blue. Per-thread coloring used to be
+// the only signal a row carried, but marks now own that semantic — assigning
+// arbitrary colors to threads would compete with mark colors for attention,
+// and would also collide with whichever lane happened to draw the mark blue.
+// Yellow (#ffd24e) is owned by the hover highlight; mark colors avoid both.
+function laneColor(_i) {
+  return "#4ea1ff";
 }
 
 function pickTicks(t0, t1, pixelW) {

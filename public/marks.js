@@ -10,17 +10,23 @@
 // sample we walk the stack inner→outer (its native order) and stop at the
 // first marked frame.
 
+// Mark palette. Hue-spread to be visually distinct on the dark background,
+// and deliberately omits two reserved colors:
+//   - #4ea1ff (the accent blue) — every timeline lane is painted with this,
+//     so a mark in that color would be invisible against its own lane.
+//   - #ffd24e (warning yellow) — used by the hover highlight on the timeline.
+// Pure blue/cyan and pure yellow are skipped wholesale to avoid look-alikes.
 export const PALETTE = [
-  "#ff6b9d", // magenta
-  "#ff7a59", // orange
-  "#ffd24e", // yellow
-  "#a4ce5a", // lime
-  "#7ad991", // green
-  "#5ce0d4", // teal
-  "#4ea1ff", // blue
-  "#9aa5ff", // periwinkle
-  "#c08fff", // purple
-  "#e8e8ea", // off-white
+  "#ef4444", // red
+  "#f97316", // orange
+  "#22c55e", // green
+  "#14b8a6", // teal
+  "#a855f7", // violet
+  "#ec4899", // pink
+  "#84cc16", // lime
+  "#d946ef", // magenta
+  "#a16207", // brown
+  "#f1f5f9", // off-white
 ];
 
 const STORAGE_KEY = "perfect.marks.v1";
