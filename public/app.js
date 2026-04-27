@@ -40,6 +40,7 @@ const els = {
   treeHeaderSamples: $("#tree-header-samples"),
   sampleSidebar: $("#sample-sidebar"),
   marksSidebar: $("#marks-sidebar"),
+  marksResizer: $("#marks-resizer"),
   marksList: $("#marks-list"),
   focusBreadcrumbs: $("#focus-breadcrumbs"),
 };
@@ -456,6 +457,25 @@ async function uploadAndLoad(file) {
     const h = Math.max(80, drag.startH + dy);
     els.timeline.style.flex = `0 0 ${h}px`;
     if (timeline) timeline.resize();
+  });
+  window.addEventListener("mouseup", () => { drag = null; });
+}
+
+// ----- Marks sidebar resizer -----
+// Dragging the left edge widens / narrows the marks sidebar. Width is held
+// inline so it persists for the session even if the sidebar is hidden and
+// reshown (e.g. all marks removed, then a new one added).
+{
+  let drag = null;
+  els.marksResizer.addEventListener("mousedown", (e) => {
+    drag = { startX: e.clientX, startW: els.marksSidebar.getBoundingClientRect().width };
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!drag) return;
+    const dx = drag.startX - e.clientX; // dragging left = wider
+    const w = Math.max(220, Math.min(800, drag.startW + dx));
+    els.marksSidebar.style.flex = `0 0 ${w}px`;
   });
   window.addEventListener("mouseup", () => { drag = null; });
 }

@@ -368,15 +368,23 @@ button { font: inherit; color: inherit; }
 
 /* ---------- Marks sidebar ---------- */
 .marks-sidebar {
-  flex: 0 0 280px;
+  flex: 0 0 360px;
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
-  overflow: auto;
   font-size: 12px;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .marks-sidebar.hidden { display: none; }
+.sidebar-resizer {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 5;
+}
+.sidebar-resizer:hover { background: var(--accent); opacity: 0.5; }
 .marks-sidebar .sidebar-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
