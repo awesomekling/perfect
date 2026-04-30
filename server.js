@@ -72,7 +72,7 @@ async function listProfiles() {
   const out = [];
   for (const e of entries) {
     if (!e.isFile()) continue;
-    if (!/^perf\.data(\..+)?$/.test(e.name) && !e.name.endsWith(".perf.data")) continue;
+    if (!e.name.endsWith(".data")) continue;
     const full = path.resolve(process.cwd(), e.name);
     const st = await fsp.stat(full);
     out.push({ name: e.name, path: full, size: st.size, mtimeMs: st.mtimeMs });

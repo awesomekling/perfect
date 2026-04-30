@@ -550,7 +550,7 @@ async function initEmpty() {
   els.profileList.innerHTML = "";
   if (list.length === 0) {
     const li = document.createElement("li");
-    li.innerHTML = `<span class="pname">No perf.data files in cwd</span>`;
+    li.innerHTML = `<span class="pname">No .data files in cwd</span>`;
     li.style.cursor = "default";
     els.profileList.appendChild(li);
     return;
