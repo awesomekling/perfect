@@ -202,6 +202,7 @@ function renderMarksSidebar() {
   const hideUnknown = els.hideUnknown.checked;
   const stats = computeMarkStats(profile, list.map((m) => m.fid), { sampleIdxs, hideUnknown, focusPath });
 
+  const nsPer = profile.timeKnown ? profile.nsPerSample : 0;
   let html = "";
   for (const m of list) {
     const label = profile.funcLabel(m.fid);
@@ -211,7 +212,8 @@ function renderMarksSidebar() {
     const s = stats.perFid.get(m.fid) || { total: 0, self: 0 };
     const totalPct = stats.denom ? (100 * s.total / stats.denom) : 0;
     const selfPct  = stats.denom ? (100 * s.self  / stats.denom) : 0;
-    const statsTip = `${totalPct.toFixed(2)}% inclusive · ${selfPct.toFixed(2)}% self · ${s.total.toLocaleString()} of ${stats.denom.toLocaleString()} samples`;
+    const timeTxt = nsPer ? fmtTimeShort(s.total * nsPer) : `${s.total.toLocaleString()} samples`;
+    const statsTip = `${totalPct.toFixed(2)}% inclusive · ${selfPct.toFixed(2)}% self · ${s.total.toLocaleString()} of ${stats.denom.toLocaleString()} samples${nsPer ? ` · ≈${fmtTimeShort(s.total * nsPer)} inclusive` : ""}`;
     html += `
       <div class="${cls}" data-fid="${m.fid}" title="${titleHint}">
         <button class="mark-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
@@ -221,7 +223,7 @@ function renderMarksSidebar() {
         </div>
         <div class="mark-stats" title="${statsTip}">
           <div class="mark-total-pct">${totalPct.toFixed(1)}%</div>
-          <div class="mark-self-pct">${selfPct.toFixed(1)}%</div>
+          <div class="mark-self-pct">${timeTxt}</div>
         </div>
         <button class="mark-del" data-del="1" title="Remove mark">×</button>
       </div>`;
