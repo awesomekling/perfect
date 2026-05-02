@@ -40,7 +40,7 @@ export class SamplesView {
 
   refresh() {
     const { startNs, endNs, tids } = this.getFilter();
-    const { times, tids: stids, stackOffsets, stackFrames } = this.profile.samples;
+    const { times, tids: stids, stackOffsets, stackFrames, weights } = this.profile.samples;
     const focusPath = this.getFocusPath();
     const K = focusPath.length;
     const hideScoped = this.getHideScoped();
@@ -51,6 +51,11 @@ export class SamplesView {
       if (t < startNs || t > endNs) continue;
       if (tids && !tids.has(stids[i])) continue;
       if (sampleColor && sampleColor[i] !== 0) continue;
+      // Hide allocations that don't contribute to the active metric. With
+      // bytes-leaked active and "Include freed" off, that means freed
+      // allocations drop out of the list — listing them would directly
+      // contradict the column header.
+      if (weights && weights[i] === 0) continue;
       if (K > 0) {
         // Drop samples whose stack doesn't contain the focus chain. Same
         // matching rule as the tree views: contiguous run in inner→outer

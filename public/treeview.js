@@ -111,6 +111,13 @@ export class TreeView {
     // sample whose stack contains an active scope — flips the analysis to
     // show what *isn't* explained by the user's scopes. Inactive scopes
     // already contribute 0 to sampleColorIdx, so they don't filter.
+    //
+    // Sparse-metric filter: also drop samples whose weight is 0 in the
+    // active metric. For bytes-leaked, freed-and-not-leaked allocations
+    // contribute 0 — including them creates ghost rows ("0 B · 50") and
+    // a totalCount that's the all-allocation count rather than the
+    // active-metric count. Skipping them up front keeps every per-node
+    // total and count consistent with what the column header says.
     const inRange = [];
     const { times, tids: stids, weights } = this.profile.samples;
     const hideScoped = this.getHideScoped();
@@ -121,6 +128,7 @@ export class TreeView {
       if (t < startNs || t > endNs) continue;
       if (tids && !tids.has(stids[i])) continue;
       if (sampleColor && sampleColor[i] !== 0) continue;
+      if (weights && weights[i] === 0) continue;
       inRange.push(i);
       totalWeight += weights ? weights[i] : 1;
     }
