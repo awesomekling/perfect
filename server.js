@@ -111,7 +111,7 @@ const inFlight = new Map();
 // Per-cache progress state, polled by the browser via /api/parse-progress.
 // Wiped when the parse finishes (regardless of success). The browser
 // requests by source path, not cache path, so we also key by absPath.
-const parseProgress = new Map(); // absPath -> {phase, fraction, message, kept, lines, expectedLines}
+const parseProgress = new Map(); // absPath -> {phase, fraction, message, kept, lines}
 function setProgress(absPath, p) { parseProgress.set(absPath, { ...parseProgress.get(absPath), ...p, ts: Date.now() }); }
 function clearProgress(absPath) { parseProgress.delete(absPath); }
 
@@ -245,14 +245,8 @@ async function loadProfile(absPath) {
     setProgress(absPath, { phase: "parse", fraction: 0, message: "Parsing…", kept: 0, lines: 0 });
     const profile = kind === "heaptrack"
       ? await parseHeaptrackData(absPath, {
-          onProgress: ({ phase, lines, kept, fraction, expectedLines }) => {
-            // The message text intentionally drops the denominator: the
-            // expectedLines value is an estimate from compressed file
-            // size and on captures with deeper-than-typical stacks the
-            // actual line count overshoots, which used to read
-            // "Parsing 58M / ~49M lines". The progress bar still shows
-            // the (clamped) fraction visually for "how close to done".
-            setProgress(absPath, { phase, lines, kept, expectedLines, fraction,
+          onProgress: ({ phase, lines, kept, fraction }) => {
+            setProgress(absPath, { phase, lines, kept, fraction,
               message: phase === "finalize"
                 ? `Building call tree (${kept.toLocaleString()} samples)…`
                 : `Parsing ${(lines/1e6).toFixed(0)}M lines · ${kept.toLocaleString()} samples kept`,
@@ -626,9 +620,9 @@ async function handleApi(req, res) {
   if (u.pathname === "/api/find")    return await apiFind(req, res, u);
   if (u.pathname === "/api/parse-progress") {
     // Polled by the loading overlay while a parse is in flight. Returns
-    // {phase, fraction, message, kept, lines, expectedLines} for the
-    // requested path, or {idle:true} if nothing's running for it (which
-    // either means the parse hasn't started yet or it just finished).
+    // {phase, fraction, message, kept, lines} for the requested path,
+    // or {idle:true} if nothing's running for it (which either means
+    // the parse hasn't started yet or it just finished).
     const p = u.searchParams.get("path");
     if (!p) return send(res, 400, "missing path");
     const abs = resolveRequestedPath(p);

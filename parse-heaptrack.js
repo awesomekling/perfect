@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 
 // Cap kept-sample count regardless of file size. The ceiling is currently
@@ -28,28 +29,56 @@ import path from "node:path";
 // next.
 const TARGET_SAMPLES = 500_000;
 
-// Stream lines from a possibly-compressed heaptrack file. Returns a promise
-// that resolves once the input is exhausted.
+// Stream lines from a possibly-compressed heaptrack file. We pipe the
+// compressed bytes ourselves (instead of letting zstd open the file) so
+// the caller can know exactly how far through the *input* we've read.
+// onTick fires every 1 M lines with the current line count and the
+// fraction of compressed bytes consumed so far — that's what drives the
+// loading progress bar. Resolves once the decoder exits.
 async function streamLines(absPath, onLine, onTick) {
-  const proc = spawnDecoder(absPath);
+  const ext = path.extname(absPath).toLowerCase();
+  // For .zst / .gz: spawn the decoder reading from stdin and pipe a
+  // counting stream of the compressed file into it. zstd's internal
+  // buffer is small (well under a percent of any real heap capture), so
+  // bytes-fed-to-stdin is a good proxy for decompression progress.
+  // Uncompressed: just createReadStream and tee the count.
+  let proc, input, totalSize;
+  try { totalSize = (await stat(absPath)).size; } catch { totalSize = 0; }
+  if (ext === ".zst") {
+    proc = spawn("zstd", ["-dc"], { stdio: ["pipe", "pipe", "ignore"] });
+    input = createReadStream(absPath);
+  } else if (ext === ".gz") {
+    proc = spawn("gzip", ["-dc"], { stdio: ["pipe", "pipe", "ignore"] });
+    input = createReadStream(absPath);
+  } else {
+    // Uncompressed: read the file directly. We still want bytes-progress,
+    // so wrap createReadStream and feed it through a no-op cat-equivalent.
+    proc = spawn("cat", [], { stdio: ["pipe", "pipe", "ignore"] });
+    input = createReadStream(absPath);
+  }
+
+  // Track bytes pushed to the decoder. The fraction is bytes/totalSize,
+  // which monotonically increases and reaches 1.0 right at the end of
+  // the input.
+  let bytesIn = 0;
+  input.on("data", (chunk) => { bytesIn += chunk.length; });
+  // Swallow EPIPE if the decoder dies — caller will see the close event.
+  input.on("error", () => {});
+  proc.stdin.on("error", () => {});
+  input.pipe(proc.stdin);
+
   const rl = createInterface({ input: proc.stdout, crlfDelay: Infinity });
   let lines = 0;
   for await (const line of rl) {
     onLine(line);
-    if (++lines % 1_000_000 === 0 && onTick) onTick(lines);
+    if (++lines % 1_000_000 === 0 && onTick) {
+      onTick(lines, totalSize > 0 ? bytesIn / totalSize : 0);
+    }
   }
   await new Promise((res, rej) => {
     proc.on("close", (code) => code === 0 ? res() : rej(new Error(`decoder exited ${code}`)));
     proc.on("error", rej);
   });
-}
-
-function spawnDecoder(absPath) {
-  const ext = path.extname(absPath).toLowerCase();
-  if (ext === ".zst") return spawn("zstd", ["-dc", absPath], { stdio: ["ignore", "pipe", "ignore"] });
-  if (ext === ".gz")  return spawn("gzip", ["-dc", absPath], { stdio: ["ignore", "pipe", "ignore"] });
-  // Uncompressed (rare for heaptrack but keeps the API uniform).
-  return spawn("cat", [absPath], { stdio: ["ignore", "pipe", "ignore"] });
 }
 
 // Estimate the total number of `+` events in a heaptrack capture from its
@@ -721,27 +750,24 @@ export async function parseHeaptrackData(absPath, opts = {}) {
 
   const parser = new HeaptrackParser(meta, stride);
   const t1 = Date.now();
-  // onProgress fires at every 1M lines. estAllocs gives us a denominator
-  // for "% complete" — heaptrack streams roughly evenly across line types,
-  // so lines/expectedLines ≈ progress.
-  const expectedLines = Math.max(1, Math.floor(estAllocs / 0.52));
-  await streamLines(absPath, (line) => parser.feedLine(line), (lines) => {
-    // Cap parse-phase fraction at 0.95: the line-count estimate routinely
-    // undershoots on captures with unusually deep inline expansion (more
-    // i lines per `+` event), and pinning the bar at 100 % while we keep
-    // streaming reads as "stuck". Finalize fires its own update at 1.0.
+  // streamLines now passes us the fraction of compressed bytes consumed
+  // so far — this is grounded in the actual file size and reaches 1.0
+  // precisely when the decoder closes, instead of saturating early on a
+  // line-count heuristic that varies wildly with stack depth.
+  await streamLines(absPath, (line) => parser.feedLine(line), (lines, byteFraction) => {
     onProgress({
       phase: "parse",
       lines,
       kept: parser._kept,
-      expectedLines,
-      fraction: Math.min(0.95, lines / expectedLines),
+      // Cap at 0.95 so the bar always has visible headroom while parse
+      // is still running; finalize jumps to 1.0.
+      fraction: Math.min(0.95, byteFraction || 0),
     });
     if (lines % 5_000_000 === 0) {
       process.stderr.write(`  ${(lines / 1e6).toFixed(0)}M lines, ${parser._kept.toLocaleString()} samples kept\n`);
     }
   });
   process.stderr.write(`  parsed in ${Date.now() - t1}ms; ${parser._kept.toLocaleString()} samples\n`);
-  onProgress({ phase: "finalize", lines: 0, kept: parser._kept, expectedLines, fraction: 1 });
+  onProgress({ phase: "finalize", lines: 0, kept: parser._kept, fraction: 1 });
   return parser.finalize();
 }
