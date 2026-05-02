@@ -43,7 +43,6 @@ const els = {
   treeFilters: $("#tree-filters"),
   treeHeaderTree: $("#tree-header-tree"),
   treeHeaderSamples: $("#tree-header-samples"),
-  treeHeaderTree: $("#tree-header-tree"),
   thSize: $("#th-size"),
   thLive: $("#th-live"),
   samplesTab: document.querySelector('.tab[data-mode="samples"]'),
@@ -494,13 +493,23 @@ for (const tab of document.querySelectorAll(".tab")) {
 // happens in TreeView.setSort; the indicator markup is owned here so it
 // can be refreshed on profile load too.
 function refreshSortIndicators() {
-  if (!els.treeHeaderTree) return;
-  const key = treeView ? treeView.sortKey : "total";
-  const desc = treeView ? treeView.sortDesc : true;
-  for (const h of els.treeHeaderTree.querySelectorAll(".sortable")) {
-    const active = h.dataset.sort === key;
-    h.classList.toggle("sort-active", active);
-    h.classList.toggle("sort-asc", active && !desc);
+  if (els.treeHeaderTree) {
+    const key = treeView ? treeView.sortKey : "total";
+    const desc = treeView ? treeView.sortDesc : true;
+    for (const h of els.treeHeaderTree.querySelectorAll(".sortable")) {
+      const active = h.dataset.sort === key;
+      h.classList.toggle("sort-active", active);
+      h.classList.toggle("sort-asc", active && !desc);
+    }
+  }
+  if (els.treeHeaderSamples) {
+    const key = samplesView ? samplesView.sortKey : "time";
+    const desc = samplesView ? samplesView.sortDesc : false;
+    for (const h of els.treeHeaderSamples.querySelectorAll(".sortable")) {
+      const active = h.dataset.sort === key;
+      h.classList.toggle("sort-active", active);
+      h.classList.toggle("sort-asc", active && !desc);
+    }
   }
 }
 if (els.treeHeaderTree) {
@@ -508,6 +517,14 @@ if (els.treeHeaderTree) {
     const h = e.target.closest(".sortable");
     if (!h || !treeView) return;
     treeView.setSort(h.dataset.sort);
+    refreshSortIndicators();
+  });
+}
+if (els.treeHeaderSamples) {
+  els.treeHeaderSamples.addEventListener("click", (e) => {
+    const h = e.target.closest(".sortable");
+    if (!h || !samplesView) return;
+    samplesView.setSort(h.dataset.sort);
     refreshSortIndicators();
   });
 }

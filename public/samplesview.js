@@ -17,8 +17,13 @@ export class SamplesView {
     this.getFilter = getFilter;
     this.getFocusPath = getFocusPath || (() => []);
     this.getHideScoped = getHideScoped || (() => false);
-    this.samples = [];       // sample indices (sorted by time, since profile.samples.times already is)
+    this.samples = [];       // sample indices, ordered by current sort key
     this._selectedIdx = -1;
+    // Default sort: time ascending — matches the natural order in
+    // profile.samples (time-sorted at parse) and is the cheapest
+    // sort to compute.
+    this.sortKey = "time";
+    this.sortDesc = false;
     this._onScroll = () => this._renderVisible();
     this._onResize = () => this._renderVisible();
     this._attached = false;
@@ -75,6 +80,7 @@ export class SamplesView {
       }
       rows.push(i);
     }
+    this._applySort(rows);
     this.samples = rows;
     this._selectedIdx = rows.length > 0 ? 0 : -1;
     this.treeEl.style.height = (rows.length * ROW_H) + "px";
@@ -82,6 +88,104 @@ export class SamplesView {
     this._renderVisible();
     this._renderSidebar();
     this._renderStats();
+  }
+
+  // Sort the index array `rows` in place by the current sortKey/sortDesc.
+  // Each comparator works on profile-relative data so the sort stays
+  // consistent across refreshes (filter changes, scope changes, etc.).
+  _applySort(rows) {
+    const { times, tids, weights, stackOffsets, stackFrames } = this.profile.samples;
+    const dir = this.sortDesc ? -1 : 1;
+    let cmp;
+    switch (this.sortKey) {
+      case "size": {
+        // No size column on perf profiles; falls back to time.
+        if (!weights) { cmp = (a, b) => (times[a] - times[b]) * dir; break; }
+        cmp = (a, b) => {
+          const d = weights[a] - weights[b];
+          return (d !== 0 ? d : times[a] - times[b]) * dir;
+        };
+        break;
+      }
+      case "thread": {
+        cmp = (a, b) => {
+          const d = tids[a] - tids[b];
+          return (d !== 0 ? d : times[a] - times[b]) * dir;
+        };
+        break;
+      }
+      case "symbol": {
+        // Compare by leaf-frame label. Cache labels per fid the first
+        // time we hit them so the sort doesn't blow up on big lists.
+        const leafFid = (i) => {
+          const off = stackOffsets[i], end = stackOffsets[i + 1];
+          return end > off ? stackFrames[off] : -1;
+        };
+        const labelCache = new Map();
+        const labelOf = (fid) => {
+          if (fid < 0) return "";
+          let s = labelCache.get(fid);
+          if (s === undefined) { s = this.profile.funcLabel(fid); labelCache.set(fid, s); }
+          return s;
+        };
+        cmp = (a, b) => {
+          const la = labelOf(leafFid(a)), lb = labelOf(leafFid(b));
+          if (la !== lb) return (la < lb ? -1 : 1) * dir;
+          return (times[a] - times[b]) * dir;
+        };
+        break;
+      }
+      case "dso": {
+        const leafFid = (i) => {
+          const off = stackOffsets[i], end = stackOffsets[i + 1];
+          return end > off ? stackFrames[off] : -1;
+        };
+        const cache = new Map();
+        const dsoOf = (fid) => {
+          if (fid < 0) return "";
+          let s = cache.get(fid);
+          if (s === undefined) {
+            // Prefer file when known (heaptrack), fall back to .so basename.
+            s = (this.profile.funcFileShort?.(fid)) || this.profile.funcDsoShort(fid);
+            cache.set(fid, s);
+          }
+          return s;
+        };
+        cmp = (a, b) => {
+          const da = dsoOf(leafFid(a)), db = dsoOf(leafFid(b));
+          if (da !== db) return (da < db ? -1 : 1) * dir;
+          return (times[a] - times[b]) * dir;
+        };
+        break;
+      }
+      case "time":
+      default:
+        cmp = (a, b) => (times[a] - times[b]) * dir;
+        break;
+    }
+    rows.sort(cmp);
+  }
+
+  // Public API: cycle direction on same key, jump to descending on a new
+  // key (matches TreeView.setSort and keeps the click feel uniform). For
+  // "time" the natural sort feels ascending-first so we flip the default
+  // there to mean "earliest first" → "latest first" on second click.
+  setSort(key) {
+    if (key === this.sortKey) {
+      this.sortDesc = !this.sortDesc;
+    } else {
+      this.sortKey = key;
+      // Defaults: time ascends (chronological), everything else descends
+      // (biggest-first) so a sort-by-Size click gives the largest
+      // allocations at the top.
+      this.sortDesc = (key !== "time");
+    }
+    if (this.samples.length === 0) return;
+    this._applySort(this.samples);
+    this._selectedIdx = 0;
+    if (this.scrollEl) this.scrollEl.scrollTop = 0;
+    this._renderVisible();
+    this._renderSidebar();
   }
 
   _renderStats() {

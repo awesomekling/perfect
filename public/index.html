@@ -76,11 +76,11 @@
               <div class="col-dso">Module</div>
             </div>
             <div class="tree-header hidden" id="tree-header-samples">
-              <div class="col-time">Time</div>
-              <div class="col-size hidden" id="th-size">Size</div>
-              <div class="col-thread">Thread</div>
-              <div class="col-symbol">Leaf function</div>
-              <div class="col-dso">Module</div>
+              <div class="col-time sortable" data-sort="time" title="Time of the allocation, relative to capture start. Click to sort.">Time</div>
+              <div class="col-size sortable hidden" id="th-size" data-sort="size" title="Allocation size in bytes. Click to sort.">Size</div>
+              <div class="col-thread sortable" data-sort="thread" title="Thread the allocation came from. Click to sort.">Thread</div>
+              <div class="col-symbol sortable" data-sort="symbol" title="Leaf function of the allocation's call stack. Click to sort.">Leaf function</div>
+              <div class="col-dso sortable" data-sort="dso" title="Source file or shared object. Click to sort.">Module</div>
             </div>
             <div class="tree-scroll" id="tree-scroll">
               <div class="tree" id="tree"></div>
