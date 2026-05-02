@@ -528,6 +528,12 @@ button { font: inherit; color: inherit; }
 /* ---------- Sample sidebar ---------- */
 .sample-sidebar {
   flex: 0 0 380px;
+  /* Without an explicit min-width, the flex item's `min-width: auto`
+   * defaults to min-content — and a long unbreakable symbol in the
+   * stack frame list (e.g. a fully-mangled C++/Rust name) sets that
+   * min-content to the symbol's full pixel width, pinning the sidebar
+   * wider than its flex basis and silently breaking the resizer. */
+  min-width: 0;
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
   font-size: 12px;
@@ -588,6 +594,7 @@ button { font: inherit; color: inherit; }
 }
 .stack-frame .frame-sym {
   flex: 1;
+  min-width: 0; /* allow ellipsis instead of expanding to symbol width */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
