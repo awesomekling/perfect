@@ -726,12 +726,16 @@ export async function parseHeaptrackData(absPath, opts = {}) {
   // so lines/expectedLines ≈ progress.
   const expectedLines = Math.max(1, Math.floor(estAllocs / 0.52));
   await streamLines(absPath, (line) => parser.feedLine(line), (lines) => {
+    // Cap parse-phase fraction at 0.95: the line-count estimate routinely
+    // undershoots on captures with unusually deep inline expansion (more
+    // i lines per `+` event), and pinning the bar at 100 % while we keep
+    // streaming reads as "stuck". Finalize fires its own update at 1.0.
     onProgress({
       phase: "parse",
       lines,
       kept: parser._kept,
       expectedLines,
-      fraction: Math.min(1, lines / expectedLines),
+      fraction: Math.min(0.95, lines / expectedLines),
     });
     if (lines % 5_000_000 === 0) {
       process.stderr.write(`  ${(lines / 1e6).toFixed(0)}M lines, ${parser._kept.toLocaleString()} samples kept\n`);

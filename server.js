@@ -246,10 +246,16 @@ async function loadProfile(absPath) {
     const profile = kind === "heaptrack"
       ? await parseHeaptrackData(absPath, {
           onProgress: ({ phase, lines, kept, fraction, expectedLines }) => {
+            // The message text intentionally drops the denominator: the
+            // expectedLines value is an estimate from compressed file
+            // size and on captures with deeper-than-typical stacks the
+            // actual line count overshoots, which used to read
+            // "Parsing 58M / ~49M lines". The progress bar still shows
+            // the (clamped) fraction visually for "how close to done".
             setProgress(absPath, { phase, lines, kept, expectedLines, fraction,
               message: phase === "finalize"
                 ? `Building call tree (${kept.toLocaleString()} samples)…`
-                : `Parsing ${(lines/1e6).toFixed(0)}M / ~${(expectedLines/1e6).toFixed(0)}M lines · ${kept.toLocaleString()} samples kept`,
+                : `Parsing ${(lines/1e6).toFixed(0)}M lines · ${kept.toLocaleString()} samples kept`,
             });
           },
         })
