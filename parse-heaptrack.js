@@ -104,12 +104,17 @@ class HeaptrackParser {
     this.meta = meta;
     this.stride = stride;
 
-    // Heaptrack interns everything 1-indexed; we mirror that by pre-pushing
-    // a null at slot 0 so reader indices line up directly.
+    // Heaptrack interns strings / IPs / traces 1-indexed (the analyzer
+    // does `vector.push_back(x); index = vector.size()` on `s`/`i`/`t`
+    // lines, so the first record gets index 1). We mirror that with a
+    // sentinel at slot 0 so reader indices line up directly.
     this.htStrings = [""];
     this.htInstructionPointers = [null]; // [{ ip, modIdx, frames: [{funcIdx,fileIdx,line}] }]
     this.htTraces = [null];              // [{ ipId, parentId }]
-    this.htAllocInfos = [null];          // [{ size, traceId }]
+    // AllocInfos are 0-indexed: `AllocationInfoSet::add` (heaptrack's
+    // util/pointermap.h) sets `index = set.size()` BEFORE inserting, so
+    // the first `a` line gets index 0. No sentinel here.
+    this.htAllocInfos = [];              // [{ size, traceId }]
     this.htDebuggee = "";
 
     // Output (perfect) tables, 0-indexed.
@@ -563,7 +568,7 @@ class HeaptrackParser {
     let totalTemporaryBytes = 0;
     let totalAllocations = 0;
     const maxSiteId = Math.max(this.htAllocInfos.length, this.htAllocCounts.length);
-    for (let id = 1; id < maxSiteId; id++) {
+    for (let id = 0; id < maxSiteId; id++) {
       const info = this.htAllocInfos[id];
       if (!info) continue;
       const ac = this.htAllocCounts[id] || 0;
