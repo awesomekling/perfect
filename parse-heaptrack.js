@@ -299,18 +299,49 @@ class HeaptrackParser {
     }
 
     // ---- instruction pointer (auto-numbered) ----
+    //
+    // Heaptrack's writer (heaptrack_interpret) emits the primary frame
+    // as a *partial* triplet when DWARF gives it no file info:
+    //
+    //     write " %zx" funcIdx
+    //     if fileIndex != 0:
+    //         write " %zx %x" fileIdx, line
+    //         <inlined frames, each a full triplet>
+    //
+    // So the line shape can be any of:
+    //     i ip mod                         (no symbol info at all)
+    //     i ip mod funcIdx                 (only function name; happens
+    //                                       for many Rust frames whose
+    //                                       DWARF lookup didn't yield a
+    //                                       decl_file, and for some
+    //                                       compiler-generated wrappers)
+    //     i ip mod funcIdx fileIdx line    (full primary)
+    //     i ip mod funcIdx fileIdx line  funcIdx fileIdx line  ...
+    //                                      (full primary + inline chain)
+    //
+    // The previous parse only recognised the third and fourth shapes —
+    // it required `j + 2 < toks.length` per triplet, so a partial
+    // primary was silently discarded and the IP appeared frame-less in
+    // the call tree. ~24% of frame-bearing IPs in the WebContent
+    // capture take that shape, including most Rust frames.
     if (type === 0x69 /* 'i' */) {
       const toks = HeaptrackParser.hexTokens(line);
       const ip = toks[0];
       const modIdx = toks[1];
       const frames = [];
-      // Triplets after (ip, modIdx) are (funcIdx, fileIdx, line). The first
-      // triplet is the IP's primary frame; subsequent triplets are the inline
-      // chain in OUTER→INNER order (the heaptrack source pushes them into
-      // ip.inlined sequentially while reading). We keep them in file order
-      // and reverse when flattening into the per-event stack below.
-      for (let j = 2; j + 2 < toks.length; j += 3) {
-        frames.push({ funcIdx: toks[j], fileIdx: toks[j + 1], line: toks[j + 2] });
+      let j = 2;
+      if (j < toks.length) {
+        // Primary frame: funcIdx required, file/line optional.
+        const funcIdx = toks[j++];
+        const fileIdx = j < toks.length ? toks[j++] : 0;
+        const lineNo  = j < toks.length ? toks[j++] : 0;
+        frames.push({ funcIdx, fileIdx, line: lineNo });
+        // Subsequent inlined frames (only ever emitted by heaptrack
+        // when the primary had a fileIdx) are always full triplets.
+        while (j + 2 <= toks.length) {
+          frames.push({ funcIdx: toks[j], fileIdx: toks[j + 1], line: toks[j + 2] });
+          j += 3;
+        }
       }
       this.htInstructionPointers.push({ ip, modIdx, frames });
       return;
