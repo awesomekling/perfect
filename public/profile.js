@@ -244,9 +244,15 @@ export function fmtTimeShort(ns) {
 }
 
 export function fmtCount(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1000).toFixed(1) + "k";
-  return String(n);
+  // Counts are conceptually integers but per-allocInfo-weighted estimates
+  // arrive fractional (each kept event contributes allocCount/kept, which
+  // sums to the integer allocCount only when *all* of an allocInfo's
+  // kept events aggregate at the same row). Round here so the display
+  // layer doesn't leak the estimator residual as "421.57 allocations".
+  const r = Math.round(n);
+  if (r >= 1_000_000) return (r / 1_000_000).toFixed(1) + "M";
+  if (r >= 1_000) return (r / 1000).toFixed(1) + "k";
+  return String(r);
 }
 
 // Format a tree node's total/self in whichever unit the profile is currently
