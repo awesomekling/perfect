@@ -2,7 +2,7 @@
 // timeline range. Selecting a sample renders its full call stack in the
 // right-hand sidebar.
 
-import { fmtMs, fmtTimeShort } from "./profile.js";
+import { fmtMs, fmtTimeShort, fmtBytesShort, fmtNodeWeight } from "./profile.js";
 
 const ROW_H = 22;
 
@@ -83,10 +83,20 @@ export class SamplesView {
     const { startNs, endNs, tids } = this.getFilter();
     const dur = endNs - startNs;
     const tidStr = tids ? `${tids.size} thread${tids.size === 1 ? "" : "s"}` : "all threads";
-    const onCpu = this.profile.timeKnown
-      ? ` · ≈${fmtTimeShort(this.samples.length * this.profile.nsPerSample)} on-CPU`
-      : "";
-    this.statsEl.textContent = `${this.samples.length.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window`;
+    let suffix = "";
+    if (this.profile.weighted) {
+      // For heap captures, the headline is bytes across the visible
+      // allocations. weights are stride-scaled; sum gives the
+      // capture-correct byte total.
+      const w = this.profile.samples.weights;
+      let total = 0;
+      if (w) for (const i of this.samples) total += w[i];
+      suffix = ` · ${fmtNodeWeight(this.profile, total)}`;
+    } else if (this.profile.timeKnown) {
+      suffix = ` · ≈${fmtTimeShort(this.samples.length * this.profile.nsPerSample)} on-CPU`;
+    }
+    const noun = this.profile.weighted ? "allocations" : "samples";
+    this.statsEl.textContent = `${this.samples.length.toLocaleString()} ${noun}${suffix} · ${tidStr} · ${fmtMs(dur)} window`;
   }
 
   _renderVisible() {
@@ -96,7 +106,13 @@ export class SamplesView {
     const first = Math.max(0, Math.floor(top / ROW_H) - 5);
     const last = Math.min(this.samples.length, Math.ceil((top + h) / ROW_H) + 5);
     const profile = this.profile;
-    const { times, tids, stackOffsets, stackFrames } = profile.samples;
+    const { times, tids, stackOffsets, stackFrames, weights } = profile.samples;
+    // For heap captures: stride-scaled weight ÷ stride = the actual
+    // allocation size in bytes. Showing the per-allocation size lets the
+    // user spot a 500 MB single-shot vs. the same total spread across
+    // thousands of small allocs.
+    const stride = profile.meta.downsampleStride || 1;
+    const showSize = profile.weighted && weights;
 
     let html = "";
     for (let i = first; i < last; i++) {
@@ -107,17 +123,26 @@ export class SamplesView {
       const end = stackOffsets[sIdx + 1];
       const leafFid = end > off ? stackFrames[off] : -1;
       const leafLabel = leafFid >= 0 ? profile.funcLabel(leafFid) : "(no stack)";
-      const dso = leafFid >= 0 ? profile.funcDsoShort(leafFid) : "";
+      const fileShort = leafFid >= 0 ? profile.funcFileShort?.(leafFid) : null;
+      const dsoShort = leafFid >= 0 ? profile.funcDsoShort(leafFid) : "";
+      const dso = fileShort || dsoShort;
+      const dsoFull = leafFid >= 0
+        ? (profile.funcFile?.(leafFid) || profile.funcDso(leafFid))
+        : "";
       const isUnknown = leafFid >= 0 && profile.isUnknown(leafFid);
       const tlabel = (profile.threadByTid.get(tid)?.primaryComm) || `tid ${tid}`;
       const isSelected = i === this._selectedIdx;
       const cls = `tree-row${isSelected ? " selected" : ""}`;
+      const sizeCol = showSize
+        ? `<div class="col-size" title="${Math.round(weights[sIdx] / stride).toLocaleString()} B per allocation">${fmtBytesShort(weights[sIdx] / stride)}</div>`
+        : "";
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${i * ROW_H}px; left:0; right:0;">
           <div class="col-time" title="${(times[sIdx] - profile.startNs).toLocaleString()} ns">${fmtTimeShort(t)}</div>
+          ${sizeCol}
           <div class="col-thread" title="${escapeHtml(tlabel)} (tid ${tid})"><span class="t">${escapeHtml(tlabel)}</span><span class="tid">tid ${tid}</span></div>
           <div class="col-symbol"><span class="sym ${isUnknown ? "unknown" : ""}" title="${escapeHtml(leafLabel)}">${escapeHtml(leafLabel)}</span></div>
-          <div class="col-dso" title="${leafFid >= 0 ? escapeHtml(profile.funcDso(leafFid)) : ""}">${escapeHtml(dso)}</div>
+          <div class="col-dso" title="${escapeHtml(dsoFull)}">${escapeHtml(dso)}</div>
         </div>
       `;
     }
@@ -136,19 +161,25 @@ export class SamplesView {
       return;
     }
     const sIdx = this.samples[this._selectedIdx];
-    const { times, tids, stackOffsets, stackFrames } = profile.samples;
+    const { times, tids, stackOffsets, stackFrames, weights } = profile.samples;
     const t = times[sIdx] - profile.startNs;
     const tid = tids[sIdx];
     const off = stackOffsets[sIdx];
     const end = stackOffsets[sIdx + 1];
     const tlabel = (profile.threadByTid.get(tid)?.primaryComm) || `tid ${tid}`;
     const depth = end - off;
+    const stride = profile.meta.downsampleStride || 1;
+    const sizeRow = (profile.weighted && weights)
+      ? `<b>Size</b><span class="v">${fmtBytesShort(weights[sIdx] / stride)}</span>`
+      : "";
 
+    const title = profile.weighted ? "Allocation stack" : "Sample stack";
     let html = `
       <div class="sidebar-header">
-        <div class="sidebar-title">Sample stack</div>
+        <div class="sidebar-title">${title}</div>
         <div class="sidebar-meta">
           <b>Time</b><span class="v">${fmtTimeShort(t)}</span>
+          ${sizeRow}
           <b>Thread</b><span class="v">${escapeHtml(tlabel)} (tid ${tid})</span>
           <b>Frames</b><span class="v">${depth}</span>
         </div>

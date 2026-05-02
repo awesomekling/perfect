@@ -41,6 +41,8 @@ const els = {
   treeFilters: $("#tree-filters"),
   treeHeaderTree: $("#tree-header-tree"),
   treeHeaderSamples: $("#tree-header-samples"),
+  thSize: $("#th-size"),
+  samplesTab: document.querySelector('.tab[data-mode="samples"]'),
   sampleSidebar: $("#sample-sidebar"),
   scopesSidebar: $("#scopes-sidebar"),
   scopesResizer: $("#scopes-resizer"),
@@ -216,6 +218,15 @@ function setProfile(json, name) {
   // default that the rest of the UI was built around.
   if (profile.weighted && mode !== "samples") {
     setMode("inverted");
+  }
+  // Samples tab is generic, but the data it lists is allocations for
+  // heap captures. Rename + reveal the Size column so the header lines
+  // up with the per-row size cells SamplesView renders.
+  if (els.samplesTab) {
+    els.samplesTab.textContent = profile.weighted ? "Allocations" : "Samples";
+  }
+  if (els.thSize) {
+    els.thSize.classList.toggle("hidden", !profile.weighted);
   }
   applyModeUI();
   activeView().refresh();

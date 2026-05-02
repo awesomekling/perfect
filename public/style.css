@@ -355,6 +355,8 @@ button { font: inherit; color: inherit; }
 .col-total, .col-self { flex: 0 0 130px; text-align: right; }
 .col-dso { flex: 0 0 240px; }
 .col-time { flex: 0 0 110px; text-align: right; font-variant-numeric: tabular-nums; }
+.col-size { flex: 0 0 90px; text-align: right; font-variant-numeric: tabular-nums; padding: 0 8px; }
+.col-size.hidden { display: none; }
 .col-thread { flex: 0 0 200px; }
 
 .bottom-body {
@@ -699,6 +701,12 @@ button { font: inherit; color: inherit; }
 }
 .tree-row .col-self .bar { background: var(--self-bar); opacity: 0.7; }
 .tree-row .num { position: relative; z-index: 1; }
+.tree-row .num-sub {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
 .tree-row .col-dso {
   color: var(--text-dim);
   white-space: nowrap;

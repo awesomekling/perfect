@@ -154,12 +154,19 @@ export class Profile {
     return f && f.file ? this.strings[f.file] : null;
   }
 
-  // Just the basename of funcFile(), for inline display. Same null-handling.
+  // Just the basename of funcFile() with line number suffix when known —
+  // "Function.h:42" rather than "Function.h" — for inline display. The
+  // line number is approximate (first-seen wins; see parse-heaptrack's
+  // internFunction notes), but for typical heap captures it's stable
+  // enough to point the reader at roughly the right spot. Null when we
+  // have no file at all.
   funcFileShort(fid) {
     const p = this.funcFile(fid);
     if (!p) return null;
     const i = p.lastIndexOf("/");
-    return i >= 0 ? p.slice(i + 1) : p;
+    const base = i >= 0 ? p.slice(i + 1) : p;
+    const f = this.functions[fid];
+    return (f && f.line) ? `${base}:${f.line}` : base;
   }
 
   isUnknown(fid) {

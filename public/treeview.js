@@ -531,17 +531,29 @@ export class TreeView {
       const scopeDotHtml = scopeColor ? `<span class="scope-dot" style="background:${scopeColor}" title="In scope"></span>` : "";
       const totalTxt = fmtNodeWeight(profile, node.total);
       const selfTxt = fmtNodeWeight(profile, node.self);
-      const totalTip = `${fmtNodeWeightLong(profile, node.total)} (${pct.toFixed(2)}%)`;
-      const selfTip = `${fmtNodeWeightLong(profile, node.self)} (${selfPct.toFixed(2)}%)`;
+      // For weighted profiles that also carry alloc counts (heaptrack),
+      // append the count under the bytes value so 500 MB across 1
+      // allocation reads differently from 500 MB across 100k. Suppressed
+      // when the active metric is itself the count (would just duplicate)
+      // or when the count is zero (non-leaf in the inverted tree).
+      const showCount = profile.weighted && profile.weightKind !== "alloc-count";
+      const totalCountTxt = (showCount && node.totalCount > 0)
+        ? `<span class="num-sub">${fmtCount(node.totalCount)}</span>` : "";
+      const selfCountTxt = (showCount && node.selfCount > 0)
+        ? `<span class="num-sub">${fmtCount(node.selfCount)}</span>` : "";
+      const totalTip = `${fmtNodeWeightLong(profile, node.total)} (${pct.toFixed(2)}%)`
+        + (showCount && node.totalCount > 0 ? ` · ${Math.round(node.totalCount).toLocaleString()} allocations` : "");
+      const selfTip = `${fmtNodeWeightLong(profile, node.self)} (${selfPct.toFixed(2)}%)`
+        + (showCount && node.selfCount > 0 ? ` · ${Math.round(node.selfCount).toLocaleString()} allocations` : "");
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;${scopeStyle}">
           <div class="col-total" title="${totalTip}">
             <span class="bar" style="width:${pct.toFixed(2)}%"></span>
-            <span class="num">${totalTxt} <span class="pct">${pct.toFixed(1)}%</span></span>
+            <span class="num">${totalTxt} <span class="pct">${pct.toFixed(1)}%</span>${totalCountTxt}</span>
           </div>
           <div class="col-self" title="${selfTip}">
             <span class="bar" style="width:${selfPct.toFixed(2)}%"></span>
-            <span class="num">${selfTxt}${node.self > 0 ? ` <span class="pct">${selfPct.toFixed(1)}%</span>` : ""}</span>
+            <span class="num">${selfTxt}${node.self > 0 ? ` <span class="pct">${selfPct.toFixed(1)}%</span>` : ""}${selfCountTxt}</span>
           </div>
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>

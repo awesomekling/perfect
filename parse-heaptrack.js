@@ -153,13 +153,21 @@ class HeaptrackParser {
     if (i === undefined) { i = this.dsos.length; this.dsos.push(s); this.dsoIdx.set(s, i); }
     return i;
   }
-  internFunction(symId, dsoId, fileId = 0) {
+  internFunction(symId, dsoId, fileId = 0, lineNo = 0) {
     const k = symId + ":" + dsoId + ":" + fileId;
     let i = this.functionIdx.get(k);
     if (i === undefined) {
       i = this.functions.length;
       const rec = { sym: symId, dso: dsoId };
       if (fileId) rec.file = fileId;
+      // First-seen line wins. The same function can show up at multiple
+      // call/IP lines — for inlined-frame entries the line is the call
+      // site of the next-deeper frame and varies per inlining; for the
+      // leaf the line is where the IP is in the function's own source
+      // and is usually stable. Storing one representative line is good
+      // enough for "where in this file" guidance without splitting rows
+      // per call site (which would explode the tree for hot allocators).
+      if (lineNo) rec.line = lineNo;
       this.functions.push(rec);
       this.functionIdx.set(k, i);
     }
@@ -374,7 +382,7 @@ class HeaptrackParser {
           if (f.fileIdx > 0 && this.htStrings[f.fileIdx]) {
             fileId = this.internString(this.htStrings[f.fileIdx]);
           }
-          out.push(this.internFunction(symId, dsoId, fileId));
+          out.push(this.internFunction(symId, dsoId, fileId, f.line || 0));
         }
       }
       traceId = trace.parentId;
