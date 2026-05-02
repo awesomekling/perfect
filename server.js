@@ -98,7 +98,7 @@ async function listProfiles() {
 
 // Bump SCHEMA whenever the parsed-profile shape changes, so old caches are
 // ignored on the next request.
-const PARSED_SCHEMA = 11;
+const PARSED_SCHEMA = 12;
 function cacheKey(absPath, mtimeMs) {
   const h = crypto.createHash("sha256").update(absPath + ":" + mtimeMs + ":v" + PARSED_SCHEMA).digest("hex").slice(0, 16);
   return path.join(CACHE, `profile-${h}.json.gz`);
@@ -107,6 +107,13 @@ function cacheKey(absPath, mtimeMs) {
 // In-flight parse jobs, keyed by cache path, so concurrent requests for the
 // same profile share one parse instead of stampeding the parser.
 const inFlight = new Map();
+
+// Per-cache progress state, polled by the browser via /api/parse-progress.
+// Wiped when the parse finishes (regardless of success). The browser
+// requests by source path, not cache path, so we also key by absPath.
+const parseProgress = new Map(); // absPath -> {phase, fraction, message, kept, lines, expectedLines}
+function setProgress(absPath, p) { parseProgress.set(absPath, { ...parseProgress.get(absPath), ...p, ts: Date.now() }); }
+function clearProgress(absPath) { parseProgress.delete(absPath); }
 
 // Stream-serialize a profile into a gzip stream. Big numeric columns
 // (samples.{times,tids,stackOffsets,stackFrames,weights,...} and the rss
@@ -235,17 +242,27 @@ async function loadProfile(absPath) {
   const job = (async () => {
     const t0 = Date.now();
     process.stderr.write(`parsing ${absPath} (${kind}) ...\n`);
+    setProgress(absPath, { phase: "parse", fraction: 0, message: "Parsing…", kept: 0, lines: 0 });
     const profile = kind === "heaptrack"
       ? await parseHeaptrackData(absPath, {
-          onProgress: ({ phase, lines, kept, allocs }) => {
-            // Heaptrack parser logs its own phase headers; the per-line ticks
-            // are too noisy for the CR-overwrite style used for perf.
+          onProgress: ({ phase, lines, kept, fraction, expectedLines }) => {
+            setProgress(absPath, { phase, lines, kept, expectedLines, fraction,
+              message: phase === "finalize"
+                ? `Building call tree (${kept.toLocaleString()} samples)…`
+                : `Parsing ${(lines/1e6).toFixed(0)}M / ~${(expectedLines/1e6).toFixed(0)}M lines · ${kept.toLocaleString()} samples kept`,
+            });
           },
         })
       : await parsePerfData(absPath, {
-          onProgress: ({ lines, samples }) => process.stderr.write(`\r  ${lines} lines, ${samples} samples`),
+          onProgress: ({ lines, samples }) => {
+            process.stderr.write(`\r  ${lines} lines, ${samples} samples`);
+            setProgress(absPath, { phase: "parse", lines, kept: samples, fraction: 0,
+              message: `Parsing ${lines.toLocaleString()} lines · ${samples.toLocaleString()} samples`,
+            });
+          },
         });
     process.stderr.write(`\n  done in ${Date.now() - t0}ms\n`);
+    setProgress(absPath, { phase: "cache", fraction: 1, message: "Compressing cache…" });
     const tmp = cache + ".tmp";
     const out = fs.createWriteStream(tmp);
     const gz = zlib.createGzip({ level: 6 });
@@ -259,7 +276,7 @@ async function loadProfile(absPath) {
   })();
   inFlight.set(cache, job);
   try { return await job; }
-  finally { inFlight.delete(cache); }
+  finally { inFlight.delete(cache); clearProgress(absPath); }
 }
 
 async function handleUpload(req, res) {
@@ -601,6 +618,20 @@ async function handleApi(req, res) {
   if (u.pathname === "/api/top")     return await apiTop(req, res, u);
   if (u.pathname === "/api/tree")    return await apiTree(req, res, u);
   if (u.pathname === "/api/find")    return await apiFind(req, res, u);
+  if (u.pathname === "/api/parse-progress") {
+    // Polled by the loading overlay while a parse is in flight. Returns
+    // {phase, fraction, message, kept, lines, expectedLines} for the
+    // requested path, or {idle:true} if nothing's running for it (which
+    // either means the parse hasn't started yet or it just finished).
+    const p = u.searchParams.get("path");
+    if (!p) return send(res, 400, "missing path");
+    const abs = resolveRequestedPath(p);
+    if (!abs) return send(res, 403, "path not allowed");
+    const prog = parseProgress.get(abs);
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(prog || { idle: true }));
+    return;
+  }
   if (u.pathname === "/api/profile") {
     const p = u.searchParams.get("path");
     if (!p) return send(res, 400, "missing path");

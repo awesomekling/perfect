@@ -797,11 +797,18 @@ button { font: inherit; color: inherit; }
   background: var(--bg-panel);
   padding: 24px 36px;
   border-radius: 10px;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
   align-items: center;
-  gap: 16px;
+  column-gap: 16px;
+  row-gap: 12px;
   border: 1px solid var(--border);
+  min-width: 380px;
 }
+.loading-card .spinner { grid-row: 1; grid-column: 1; }
+.loading-card .loading-text { grid-row: 1; grid-column: 2; }
+.loading-card .loading-bar { grid-row: 2; grid-column: 1 / span 2; }
 .spinner {
   width: 18px; height: 18px;
   border: 2px solid var(--border);
@@ -810,6 +817,29 @@ button { font: inherit; color: inherit; }
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.loading-bar {
+  width: 100%;
+  height: 4px;
+  background: #2a2a32;
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.loading-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0;
+  transition: width 0.25s ease;
+}
+.loading-bar.indeterminate .loading-bar-fill {
+  width: 30% !important;
+  animation: loading-slide 1.4s ease-in-out infinite;
+  transition: none;
+}
+@keyframes loading-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(380%); }
+}
 
 /* ---------- Misc ---------- */
 .no-select { user-select: none; }

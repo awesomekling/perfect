@@ -15,6 +15,8 @@ const els = {
   empty: $("#empty"),
   loading: $("#loading"),
   loadingText: $("#loading-text"),
+  loadingBar: $("#loading-bar"),
+  loadingBarFill: $("#loading-bar-fill"),
   dropzone: $("#dropzone"),
   profileList: $("#profile-list"),
   laneLabels: $("#lane-labels"),
@@ -72,15 +74,37 @@ async function listProfiles() {
 
 async function loadProfileByPath(p, name) {
   showLoading(`Loading ${name || p}…`);
+  // Poll the server for parse progress while the (potentially long) GET
+  // /api/profile request is in flight. The first request in a session
+  // triggers the parse server-side and won't return until everything's
+  // done; the polled state lets us animate "Parsing 12M / 50M lines …
+  // 240,000 samples kept (24%)" instead of staring at a static spinner.
+  let polling = true;
+  (async () => {
+    while (polling) {
+      try {
+        const pr = await fetch(`/api/parse-progress?path=${encodeURIComponent(p)}`);
+        if (pr.ok) {
+          const j = await pr.json();
+          if (!j.idle && j.message) {
+            const pct = (j.fraction != null && j.fraction > 0) ? Math.round(j.fraction * 100) + "%" : "";
+            showLoading(`${j.message}${pct ? `  (${pct})` : ""}`, j.fraction || 0);
+          }
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  })();
   try {
     const r = await fetch(`/api/profile?path=${encodeURIComponent(p)}`);
     if (!r.ok) throw new Error(await r.text());
-    showLoading(`Parsing ${name || p}…`);
+    showLoading(`Decoding ${name || p}…`, 1);
     const json = await r.json();
     setProfile(json, name || p);
   } catch (e) {
     alert("Failed to load: " + e.message);
   } finally {
+    polling = false;
     hideLoading();
   }
 }
@@ -432,9 +456,18 @@ function applyModeUI() {
   renderScopesSidebar();
 }
 
-function showLoading(text) {
+function showLoading(text, fraction) {
   els.loadingText.textContent = text;
   els.loading.classList.remove("hidden");
+  if (els.loadingBar) {
+    if (typeof fraction === "number" && fraction > 0) {
+      els.loadingBar.classList.remove("indeterminate");
+      els.loadingBarFill.style.width = `${Math.min(100, Math.max(0, fraction * 100))}%`;
+    } else {
+      els.loadingBar.classList.add("indeterminate");
+      els.loadingBarFill.style.width = "";
+    }
+  }
 }
 function hideLoading() {
   els.loading.classList.add("hidden");

@@ -52,14 +52,22 @@ function spawnDecoder(absPath) {
   return spawn("cat", [absPath], { stdio: ["ignore", "pipe", "ignore"] });
 }
 
-// Pass 1: count `+` lines so we know the right downsample stride.
-async function countAllocations(absPath, onProgress) {
-  let count = 0;
-  await streamLines(absPath, (line) => {
-    // Cheaper than line[0]==='+': avoid the substring allocation.
-    if (line.charCodeAt(0) === 0x2b) count++;
-  }, (lines) => onProgress?.({ phase: "count", lines, allocs: count }));
-  return count;
+// Estimate the total number of `+` events in a heaptrack capture from its
+// compressed file size. Lets us pick a downsample stride up front, in one
+// pass, instead of streaming the whole file twice.
+//
+// The heuristic comes from the WebContent capture in this repo: 100 MB
+// compressed → 25 M alloc events, ~4 MB compressed per million events.
+// Heaptrack streams are dominated by `+ <hex>` lines (~52 % of all lines
+// for that capture), so the ratio is stable across captures regardless
+// of stack depth or symbol-table size — those affect strings/i/t lines
+// which compress separately. If the estimate is off by 2-3x in either
+// direction the resulting kept-sample count is still in the same ballpark
+// as TARGET_SAMPLES, with no correctness impact (just slightly more or
+// fewer samples than aimed for).
+const COMPRESSED_BYTES_PER_ALLOC = 4;
+function estimateAllocations(fileSize) {
+  return Math.max(0, Math.floor(fileSize / COMPRESSED_BYTES_PER_ALLOC));
 }
 
 class HeaptrackParser {
@@ -688,22 +696,33 @@ export async function parseHeaptrackData(absPath, opts = {}) {
     fileMtimeMs: st.mtimeMs,
   };
 
-  // Pass 1: count `+` events to compute downsample stride.
-  process.stderr.write("  counting events...\n");
-  const t0 = Date.now();
-  const totalAllocs = await countAllocations(absPath, onProgress);
-  const stride = Math.max(1, Math.ceil(totalAllocs / TARGET_SAMPLES));
-  process.stderr.write(`  ${totalAllocs.toLocaleString()} allocations in ${Date.now() - t0}ms; stride=${stride}\n`);
+  // Pick the stride from a compressed-size estimate so we can do this in
+  // one pass. If the estimate's wrong we end up with somewhat more or
+  // fewer kept samples than TARGET_SAMPLES — fine, both stay within
+  // browser-parse budget.
+  const estAllocs = estimateAllocations(st.size);
+  const stride = Math.max(1, Math.ceil(estAllocs / TARGET_SAMPLES));
+  process.stderr.write(`  ~${estAllocs.toLocaleString()} allocations estimated from ${(st.size/1e6).toFixed(0)} MB; stride=${stride}\n`);
 
-  // Pass 2: full parse with stride sampling.
   const parser = new HeaptrackParser(meta, stride);
   const t1 = Date.now();
+  // onProgress fires at every 1M lines. estAllocs gives us a denominator
+  // for "% complete" — heaptrack streams roughly evenly across line types,
+  // so lines/expectedLines ≈ progress.
+  const expectedLines = Math.max(1, Math.floor(estAllocs / 0.52));
   await streamLines(absPath, (line) => parser.feedLine(line), (lines) => {
-    onProgress({ phase: "parse", lines, kept: parser._kept });
+    onProgress({
+      phase: "parse",
+      lines,
+      kept: parser._kept,
+      expectedLines,
+      fraction: Math.min(1, lines / expectedLines),
+    });
     if (lines % 5_000_000 === 0) {
       process.stderr.write(`  ${(lines / 1e6).toFixed(0)}M lines, ${parser._kept.toLocaleString()} samples kept\n`);
     }
   });
   process.stderr.write(`  parsed in ${Date.now() - t1}ms; ${parser._kept.toLocaleString()} samples\n`);
+  onProgress({ phase: "finalize", lines: 0, kept: parser._kept, expectedLines, fraction: 1 });
   return parser.finalize();
 }
