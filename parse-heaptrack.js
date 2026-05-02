@@ -154,19 +154,25 @@ class HeaptrackParser {
     return i;
   }
   internFunction(symId, dsoId, fileId = 0, lineNo = 0) {
-    const k = symId + ":" + dsoId + ":" + fileId;
+    // Line is part of the identity so distinct lambdas / inlining call
+    // sites at different lines in the same file don't collapse into one
+    // row. Heaptrack reports e.g. ~50 distinct `operator()` frames in
+    // Fetching.cpp (one per lambda); without line in the key we'd sum
+    // all of their allocations under whichever line we saw first, which
+    // both inflates the row's count and mislabels its location.
+    //
+    // The downside is mild over-splitting for non-inlined functions
+    // whose body spans multiple lines (each IP that lands on a
+    // different statement creates a distinct row). In practice the leaf
+    // frames where this matters are allocator code (kmalloc, operator
+    // new) that's typically one source line of allocation, so the
+    // over-split is small in volume.
+    const k = symId + ":" + dsoId + ":" + fileId + ":" + lineNo;
     let i = this.functionIdx.get(k);
     if (i === undefined) {
       i = this.functions.length;
       const rec = { sym: symId, dso: dsoId };
       if (fileId) rec.file = fileId;
-      // First-seen line wins. The same function can show up at multiple
-      // call/IP lines — for inlined-frame entries the line is the call
-      // site of the next-deeper frame and varies per inlining; for the
-      // leaf the line is where the IP is in the function's own source
-      // and is usually stable. Storing one representative line is good
-      // enough for "where in this file" guidance without splitting rows
-      // per call site (which would explode the tree for hot allocators).
       if (lineNo) rec.line = lineNo;
       this.functions.push(rec);
       this.functionIdx.set(k, i);

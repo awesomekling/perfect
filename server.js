@@ -98,7 +98,7 @@ async function listProfiles() {
 
 // Bump SCHEMA whenever the parsed-profile shape changes, so old caches are
 // ignored on the next request.
-const PARSED_SCHEMA = 7;
+const PARSED_SCHEMA = 8;
 function cacheKey(absPath, mtimeMs) {
   const h = crypto.createHash("sha256").update(absPath + ":" + mtimeMs + ":v" + PARSED_SCHEMA).digest("hex").slice(0, 16);
   return path.join(CACHE, `profile-${h}.json.gz`);
