@@ -27,6 +27,8 @@ const els = {
   tree: $("#tree"),
   stats: $("#stats"),
   hideUnknown: $("#hide-unknown"),
+  weightKindFilter: $("#weight-kind-filter"),
+  weightKind: $("#weight-kind"),
   search: $("#search"),
   searchCount: $("#search-count"),
   searchPrev: $("#search-prev"),
@@ -98,6 +100,26 @@ function setProfile(json, name) {
 
   scopes = new Scopes(profile);
   scopes.onChange = onScopesChanged;
+
+  // Metric switcher: shown only on profiles that carry multiple weight
+  // kinds. Switching the active kind reroutes profile.samples.weights and
+  // refreshes views — the analysis path stays oblivious.
+  if (profile.weightKinds && profile.weightKinds.length > 1) {
+    els.weightKind.innerHTML = "";
+    for (const k of profile.weightKinds) {
+      const opt = document.createElement("option");
+      opt.value = k.kind; opt.textContent = k.label;
+      if (k.kind === profile.weightKind) opt.selected = true;
+      els.weightKind.appendChild(opt);
+    }
+    els.weightKindFilter.classList.remove("hidden");
+  } else {
+    els.weightKindFilter.classList.add("hidden");
+  }
+  profile.onWeightKindChange = () => {
+    if (timeline) timeline.draw();
+    if (activeView()) activeView().refresh();
+  };
 
   const getHideScoped = () => els.hideScoped.checked;
 
@@ -388,6 +410,9 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
+els.weightKind.addEventListener("change", () => {
+  if (profile) profile.setActiveWeightKind(els.weightKind.value);
+});
 els.hideScoped.addEventListener("change", () => {
   if (timeline) timeline.draw();
   if (activeView()) activeView().refresh();

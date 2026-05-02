@@ -231,6 +231,17 @@ button { font: inherit; color: inherit; }
 .filters.hidden { display: none; }
 .filter { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); }
 .filter.hidden { display: none; }
+.filter .filter-label { margin-right: 2px; }
+.filter select {
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font: var(--text-mono);
+  font-size: 12px;
+}
+.filter.hidden { display: none; }
 .filter input[type="text"] {
   background: #1a1a1e; border: 1px solid var(--border); color: var(--text);
   padding: 3px 6px; border-radius: 4px; font: inherit; width: 200px;

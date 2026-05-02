@@ -77,19 +77,45 @@ class HeaptrackParser {
     this.dsos = [];
     this.dsoIdx = new Map();
     this.functions = [];
-    this.functionIdx = new Map(); // packed key (symId * 65536 + dsoId) -> fid
+    // Function identity is (sym, dso, file). Heaptrack's symbolicator can
+    // emit the same unqualified name in different source files (e.g.
+    // `call::operator()` is 23 different lambdas across LibWeb files for
+    // the WebContent capture); without `file` in the key those collapse
+    // into one tree row with inflated totals. perf calls this with
+    // file=0 (no file info) and the perf path stays unchanged.
+    this.functionIdx = new Map(); // string key "sym:dso:file" -> fid
 
     // For each (allocInfoId), cache the flattened innermost→outermost stack
     // of fids. Many `+` events reference the same alloc info; computing the
     // stack once per info saves a lot of repeated tree walks.
     this._stackCache = new Map();
 
-    // Output samples (parallel arrays, finalized into typed-array shape).
-    this.sampleTimes = [];     // ns
-    this.sampleTids = [];
-    this.sampleWeights = [];   // bytes (size × stride)
-    this.sampleStackFrames = [];
-    this.sampleStackOffsets = [0];
+    // Per-allocation-site running counters, sparse arrays keyed by
+    // allocInfoId. Used both to drive per-event metric weights (leaked /
+    // temporary) and to compute capture-wide totals at finalize time.
+    this.htAllocCounts = [];     // # of `+` events for this site
+    this.htFreeCounts = [];      // # of `-` events for this site
+    this.htTemporaryCounts = []; // # of `-` events that fired immediately
+                                 // after a `+` for the same site (matches
+                                 // heaptrack's "temporary allocation" rule)
+
+    // Kept-event records (parallel arrays). We defer materialising the
+    // sample arrays until finalize() so we can mark a kept `+` as
+    // `temporary` retroactively when its matching `-` arrives.
+    this.keptTimeMs = [];
+    this.keptAllocInfoId = [];
+    this.keptSiteIdx = [];   // 0-indexed position of this `+` within its site
+    this.keptTemporary = []; // 0/1, set on the `-` that immediately follows
+
+    // Heaptrack-style temporary detection: a `-` event is temporary iff the
+    // event immediately preceding it was a `+` for the same allocInfoId,
+    // with no other `+`/`-` in between (other line types don't reset this).
+    // _lastAllocInfoSeen tracks the allocInfoId of the most recent `+`;
+    // _lastKeptIdx tracks the index in our kept arrays of the most recent
+    // kept `+`, or -1 if the most recent `+` was downsampled away (so the
+    // following `-` can't mark any kept event as temporary).
+    this._lastAllocInfoSeen = 0;
+    this._lastKeptIdx = -1;
 
     // RSS time series for the timeline overlay.
     this.rssTimesNs = [];
@@ -115,10 +141,16 @@ class HeaptrackParser {
     if (i === undefined) { i = this.dsos.length; this.dsos.push(s); this.dsoIdx.set(s, i); }
     return i;
   }
-  internFunction(symId, dsoId) {
-    const k = symId * 65536 + dsoId;
+  internFunction(symId, dsoId, fileId = 0) {
+    const k = symId + ":" + dsoId + ":" + fileId;
     let i = this.functionIdx.get(k);
-    if (i === undefined) { i = this.functions.length; this.functions.push({ sym: symId, dso: dsoId }); this.functionIdx.set(k, i); }
+    if (i === undefined) {
+      i = this.functions.length;
+      const rec = { sym: symId, dso: dsoId };
+      if (fileId) rec.file = fileId;
+      this.functions.push(rec);
+      this.functionIdx.set(k, i);
+    }
     return i;
   }
 
@@ -157,26 +189,52 @@ class HeaptrackParser {
     // ---- alloc event (high-frequency, fast path) ----
     if (type === 0x2b /* '+' */) {
       this._allocSeen++;
-      // Stride sampling: keep every Nth event (where N=stride from pass 1).
-      // Weight is scaled by stride so byte totals are preserved on average.
-      if (this._allocSeen % this.stride !== 0) return;
       const allocInfoId = parseHexFrom(line, 2);
-      const info = this.htAllocInfos[allocInfoId];
-      if (!info) return;
-      const stack = this._stackForAllocInfo(allocInfoId);
-      if (stack.length === 0) return;
-      const tNs = this.currentTimeMs * 1_000_000;
-      this.sampleTimes.push(tNs);
-      this.sampleTids.push(1);
-      this.sampleWeights.push(info.size * this.stride);
-      for (let j = 0; j < stack.length; j++) this.sampleStackFrames.push(stack[j]);
-      this.sampleStackOffsets.push(this.sampleStackFrames.length);
-      this._kept++;
+      // Per-site running count, for FIFO leak pairing later.
+      const siteIdx = (this.htAllocCounts[allocInfoId] || 0);
+      this.htAllocCounts[allocInfoId] = siteIdx + 1;
+      // Stride sampling: keep every Nth event. The kept event's weight is
+      // scaled by stride at finalize time so capture-wide byte totals are
+      // preserved on average.
+      const isKept = (this._allocSeen % this.stride === 0)
+                     && this.htAllocInfos[allocInfoId] != null;
+      if (isKept) {
+        this.keptTimeMs.push(this.currentTimeMs);
+        this.keptAllocInfoId.push(allocInfoId);
+        this.keptSiteIdx.push(siteIdx);
+        this.keptTemporary.push(0);
+        this._lastKeptIdx = this.keptTimeMs.length - 1;
+        this._kept++;
+      } else {
+        // Most-recent + wasn't kept: a subsequent matching - cannot mark
+        // any kept event as temporary.
+        this._lastKeptIdx = -1;
+      }
+      this._lastAllocInfoSeen = allocInfoId;
+      if (this.firstTimeMs === null) this.firstTimeMs = this.currentTimeMs;
+      this.lastTimeMs = this.currentTimeMs;
       return;
     }
 
-    // ---- free event: ignored in v1 (no leak/temporary tracking yet) ----
-    if (type === 0x2d /* '-' */) return;
+    // ---- free event ----
+    // Per-site free counter; if the immediately-preceding event was a `+`
+    // for the same allocInfoId, this is a "temporary" allocation in
+    // heaptrack's sense (alloc never outlived another alloc). When the
+    // matching `+` was kept, mark that kept event so finalize emits a
+    // nonzero bytes-temporary weight for it.
+    if (type === 0x2d /* '-' */) {
+      const allocInfoId = parseHexFrom(line, 2);
+      this.htFreeCounts[allocInfoId] = (this.htFreeCounts[allocInfoId] || 0) + 1;
+      if (allocInfoId !== 0 && allocInfoId === this._lastAllocInfoSeen) {
+        this.htTemporaryCounts[allocInfoId] = (this.htTemporaryCounts[allocInfoId] || 0) + 1;
+        if (this._lastKeptIdx >= 0 && this.keptAllocInfoId[this._lastKeptIdx] === allocInfoId) {
+          this.keptTemporary[this._lastKeptIdx] = 1;
+        }
+      }
+      this._lastAllocInfoSeen = 0;
+      this._lastKeptIdx = -1;
+      return;
+    }
 
     // ---- clock advance ----
     if (type === 0x63 /* 'c' */) {
@@ -254,11 +312,18 @@ class HeaptrackParser {
   // Flatten an alloc info's call stack into a Uint32Array of fids, ordered
   // innermost→outermost (matching the perf parser's convention).
   //
-  // Walk: trace tree from leaf upward (parent pointers). At each trace level,
-  // the IP carries its primary frame plus inlined frames stored OUTER→INNER
-  // in file order. Within one IP, the innermost-of-IP is the LAST inlined
-  // frame; the outermost-of-IP is the primary `frame`. So push inlined in
-  // REVERSE, then push the primary frame, before moving to the parent trace.
+  // Walk: trace tree from leaf upward (parent pointers — heaptrack's tree
+  // has parent = "the calling frame", so walking parent pointers goes from
+  // the actual leaf trace toward the entry-point trace, which is already
+  // the innermost→outermost direction we want).
+  //
+  // Within one IP, frames in the file are innermost-first: the heaptrack
+  // symbolicator sets `ip.frame = scopes.back()` (the deepest inlined
+  // subroutine) and pushes `ip.inlined[]` from next-to-innermost outward,
+  // ending at the actual subprogram. Iterate in file order so the deepest
+  // inlined function lands at the lowest stack index — otherwise self
+  // attribution lands on the outer subprogram instead of the real leaf
+  // (e.g., `kmalloc` self-bytes get credited to its outer-most caller).
   _stackForAllocInfo(allocInfoId) {
     const cached = this._stackCache.get(allocInfoId);
     if (cached) return cached;
@@ -273,14 +338,20 @@ class HeaptrackParser {
       if (ip) {
         const dsoStr = this.htStrings[ip.modIdx] || "[unknown]";
         const dsoId = this.internDso(dsoStr);
-        // Inlined frames in the file are outer→inner of this IP. Reverse to
-        // emit innermost first; primary `frame` (the IP's outermost) is at
-        // index 0 in our `frames` array, so it goes last.
-        for (let j = ip.frames.length - 1; j >= 0; j--) {
+        for (let j = 0; j < ip.frames.length; j++) {
           const f = ip.frames[j];
           const symStr = (f.funcIdx > 0 && this.htStrings[f.funcIdx]) || "[unknown]";
           const symId = this.internString(symStr);
-          out.push(this.internFunction(symId, dsoId));
+          // File path goes into the function key so two functions with the
+          // same unqualified name in different .cpp files don't collapse
+          // into one tree row. The string itself is interned in the same
+          // table as symbols / dsos — small overhead since most file paths
+          // are reused across many frames.
+          let fileId = 0;
+          if (f.fileIdx > 0 && this.htStrings[f.fileIdx]) {
+            fileId = this.internString(this.htStrings[f.fileIdx]);
+          }
+          out.push(this.internFunction(symId, dsoId, fileId));
         }
       }
       traceId = trace.parentId;
@@ -299,18 +370,93 @@ class HeaptrackParser {
     const debuggee = this.htDebuggee || "(unknown)";
     const exe = debuggee.split(/\s+/)[0] || "";
     const comm = (exe.split("/").pop() || debuggee).slice(0, 32);
-    const totalBytes = this.sampleWeights.reduce((a, b) => a + b, 0);
+
+    // Materialise the kept events into the perf-shaped sample arrays. We
+    // deferred this so the temporary bit could be marked retroactively by
+    // following `-` events.
+    const N = this.keptTimeMs.length;
+    const sampleTimes = new Float64Array(N);
+    const sampleTids = new Int32Array(N);
+    const sampleStackOffsets = new Uint32Array(N + 1);
+    const sampleStackFramesArr = []; // accumulate, then convert to typed
+    const wAllocated = new Float64Array(N);
+    const wLeaked = new Float64Array(N);
+    const wTemporary = new Float64Array(N);
+    const wCount = new Float64Array(N);
+
+    sampleStackOffsets[0] = 0;
+    let stackPos = 0;
+    for (let i = 0; i < N; i++) {
+      const allocInfoId = this.keptAllocInfoId[i];
+      const info = this.htAllocInfos[allocInfoId];
+      const size = info ? info.size : 0;
+      const stack = this._stackForAllocInfo(allocInfoId);
+      sampleTimes[i] = this.keptTimeMs[i] * 1_000_000;
+      sampleTids[i] = 1;
+      for (let j = 0; j < stack.length; j++) sampleStackFramesArr.push(stack[j]);
+      stackPos += stack.length;
+      sampleStackOffsets[i + 1] = stackPos;
+
+      // FIFO leak pairing: of `allocCount` allocations through this site,
+      // the first `freeCount` are paired/freed; the rest leak. We know
+      // this kept event was the (siteIdx)-th allocation through its site,
+      // so it's leaked iff siteIdx >= freeCount.
+      const allocCount = this.htAllocCounts[allocInfoId] || 0;
+      const freeCount = this.htFreeCounts[allocInfoId] || 0;
+      const siteIdx = this.keptSiteIdx[i];
+      const leaked = (siteIdx >= freeCount);
+      const sized = size * this.stride;
+
+      wAllocated[i] = sized;
+      wLeaked[i] = leaked ? sized : 0;
+      wTemporary[i] = this.keptTemporary[i] ? sized : 0;
+      wCount[i] = this.stride;
+    }
+
+    // Capture-wide totals computed across ALL events (not just kept), for
+    // the file-info banner. Less affected by stride sampling than
+    // sample-level sums would be.
+    let totalAllocatedBytes = 0;
+    let totalLeakedBytes = 0;
+    let totalTemporaryBytes = 0;
+    let totalAllocations = 0;
+    const maxSiteId = Math.max(this.htAllocInfos.length, this.htAllocCounts.length);
+    for (let id = 1; id < maxSiteId; id++) {
+      const info = this.htAllocInfos[id];
+      if (!info) continue;
+      const ac = this.htAllocCounts[id] || 0;
+      const fc = this.htFreeCounts[id] || 0;
+      const tc = this.htTemporaryCounts[id] || 0;
+      totalAllocatedBytes += ac * info.size;
+      totalLeakedBytes += Math.max(0, ac - fc) * info.size;
+      totalTemporaryBytes += tc * info.size;
+      totalAllocations += ac;
+    }
+
     return {
       meta: {
         ...this.meta,
+        // The active default. Profile lets the UI flip among
+        // weightsByKind without a reload.
         weightKind: "bytes-allocated",
         weightLabel: "bytes",
+        // What kinds the profile carries, in display order. Drives the UI's
+        // metric-switcher dropdown.
+        weightKinds: [
+          { kind: "bytes-allocated", label: "Allocated bytes",  unit: "bytes" },
+          { kind: "bytes-leaked",    label: "Leaked bytes",     unit: "bytes" },
+          { kind: "bytes-temporary", label: "Temporary bytes",  unit: "bytes" },
+          { kind: "alloc-count",     label: "Allocation count", unit: "count" },
+        ],
         debuggee,
         startNs,
         endNs,
-        sampleCount: this.sampleTimes.length,
+        sampleCount: N,
         downsampleStride: this.stride,
-        totalAllocated: totalBytes,
+        totalAllocations,
+        totalAllocated: totalAllocatedBytes,
+        totalLeaked: totalLeakedBytes,
+        totalTemporary: totalTemporaryBytes,
         // Heaptrack doesn't have a meaningful "Hz" — leave sampleFreq 0 so
         // Profile.timeKnown stays false and the UI doesn't render bogus
         // "X ms on-CPU" stats. We still ship per-event timestamps so the
@@ -330,11 +476,21 @@ class HeaptrackParser {
       dsos: this.dsos,
       functions: this.functions,
       samples: {
-        times: this.sampleTimes,
-        tids: this.sampleTids,
-        stackOffsets: this.sampleStackOffsets,
-        stackFrames: this.sampleStackFrames,
-        weights: this.sampleWeights,
+        times: sampleTimes,
+        tids: sampleTids,
+        stackOffsets: sampleStackOffsets,
+        stackFrames: sampleStackFramesArr,
+        // Default weights = the active kind. Profile constructor reads
+        // weightsByKind and selects one as `weights` based on
+        // meta.weightKind, so analysis.js doesn't need to know about
+        // multiple kinds.
+        weights: wAllocated,
+        weightsByKind: {
+          "bytes-allocated": wAllocated,
+          "bytes-leaked":    wLeaked,
+          "bytes-temporary": wTemporary,
+          "alloc-count":     wCount,
+        },
       },
       // Process RSS over time, sampled by heaptrack every ~10ms. Drives the
       // memory-usage line overlaid on the timeline lanes.

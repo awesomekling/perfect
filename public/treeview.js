@@ -488,8 +488,16 @@ export class TreeView {
       const fid = node.fid;
       const isTruncated = fid === TRUNCATED_FID;
       const label = isTruncated ? "[truncated]" : profile.funcLabel(fid);
-      const dso = isTruncated ? "" : profile.funcDsoShort(fid);
-      const dsoFull = isTruncated ? "perf could not unwind past this frame" : profile.funcDso(fid);
+      // For heaptrack frames the source-file basename is more useful than
+      // the .so name (one .so contains thousands of functions; a .cpp file
+      // narrows it down to one). When file info is present, render it as
+      // the module column. Falls back to the dso when no file is known
+      // (perf path, or DWARF entries without a file).
+      const fileShort = isTruncated ? null : profile.funcFileShort?.(fid);
+      const dsoShort = isTruncated ? "" : profile.funcDsoShort(fid);
+      const dso = fileShort || dsoShort;
+      const dsoFull = isTruncated ? "perf could not unwind past this frame"
+                    : (profile.funcFile?.(fid) || profile.funcDso(fid));
       const isUnknown = !isTruncated && profile.isUnknown(fid);
       const expandable = node.children.size > 0 || node._lazy;
       const expanded = this.expanded.has(node.id) || this._searchExpanded.has(node.id);
