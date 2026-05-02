@@ -50,9 +50,8 @@
             <button class="tab" data-mode="samples">Samples</button>
           </div>
           <div class="filters" id="tree-filters">
-            <label class="filter hidden" id="weight-kind-filter">
-              <span class="filter-label">Metric</span>
-              <select id="weight-kind"></select>
+            <label class="filter hidden" id="include-freed-filter" title="By default the call graph counts only allocations still alive at the end of the capture. Check this to also include allocations that were freed before the recording ended (transient).">
+              <input type="checkbox" id="include-freed"> Include freed allocations
             </label>
             <label class="filter"><input type="checkbox" id="hide-unknown" checked> Hide unknown frames</label>
             <div class="search-group">

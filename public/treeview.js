@@ -14,6 +14,16 @@ import {
 
 const ROW_H = 22;
 
+// Verb shown after the headline number in the stats line, per active
+// weight kind. Keeps "53 GB allocated" / "5 GB live" / etc. consistent
+// with the file-info banner.
+const WEIGHT_VERB = {
+  "bytes-leaked":    "live",
+  "bytes-allocated": "allocated",
+  "bytes-temporary": "transient",
+  "alloc-count":     "allocations",
+};
+
 export class TreeView {
   constructor({ profile, scopes, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getHideScoped, getAutoExpand, getTopInverted }) {
     this.profile = profile;
@@ -146,10 +156,12 @@ export class TreeView {
     const tidStr = tids ? `${tids.size} thread${tids.size === 1 ? "" : "s"}` : "all threads";
     let suffix = "";
     if (this.profile.weighted) {
-      // For heap profiles the byte total is the headline metric; raw sample
-      // count is implementation detail (kept-after-downsampling) and goes
-      // into the tooltip.
-      suffix = ` · ${fmtNodeWeight(this.profile, this.totalWeight)} allocated`;
+      // For heap profiles the weighted total is the headline metric; raw
+      // sample count is implementation detail (kept-after-downsampling).
+      // Verb tracks the active kind so the user knows which column they're
+      // looking at — "live", "allocated", "transient", "allocations".
+      const verb = WEIGHT_VERB[this.profile.weightKind] || "weighted";
+      suffix = ` · ${fmtNodeWeight(this.profile, this.totalWeight)} ${verb}`;
     } else if (this.profile.timeKnown) {
       suffix = ` · ≈${fmtTimeShort(this.totalSamples * this.profile.nsPerSample)} on-CPU`;
     }

@@ -27,8 +27,8 @@ const els = {
   tree: $("#tree"),
   stats: $("#stats"),
   hideUnknown: $("#hide-unknown"),
-  weightKindFilter: $("#weight-kind-filter"),
-  weightKind: $("#weight-kind"),
+  includeFreedFilter: $("#include-freed-filter"),
+  includeFreed: $("#include-freed"),
   search: $("#search"),
   searchCount: $("#search-count"),
   searchPrev: $("#search-prev"),
@@ -81,42 +81,61 @@ async function loadProfileByPath(p, name) {
   }
 }
 
-function setProfile(json, name) {
-  profile = new Profile(json);
-  els.empty.classList.add("hidden");
+// Per-active-kind metadata for the file-info banner. For weighted profiles
+// the headline number switches with the active metric (live vs all bytes,
+// allocations, etc.), so we keep the formatting in one place.
+const KIND_BANNER = {
+  "bytes-leaked":    { totalKey: "totalLeaked",       label: "live" },
+  "bytes-allocated": { totalKey: "totalAllocated",    label: "allocated" },
+  "bytes-temporary": { totalKey: "totalTemporary",    label: "transient" },
+  "alloc-count":     { totalKey: "totalAllocations",  label: "allocations" },
+};
+
+let _profileName = "";
+function updateFileInfoSummary() {
+  if (!profile) return;
   let summary = "";
   if (profile.weighted) {
-    // Heaptrack-style: byte total is the headline; raw kept-sample count
-    // (after server-side downsampling) goes in the tooltip rather than the
-    // banner.
-    const totalBytes = profile.meta.totalAllocated || 0;
-    summary = ` · ${fmtNodeWeight(profile, totalBytes)} allocated`;
+    const desc = KIND_BANNER[profile.weightKind];
+    if (desc) {
+      const total = profile.meta[desc.totalKey] || 0;
+      summary = ` · ${fmtNodeWeight(profile, total)} ${desc.label}`;
+    }
   } else if (profile.timeKnown) {
     summary = ` · ≈${fmtTimeShort(profile.sampleCount * profile.nsPerSample)} on-CPU`;
   }
   const ev = profile.meta.eventName ? ` · ${escapeHtml(profile.meta.eventName)}` : "";
   const freq = profile.meta.sampleFreq ? ` @ ${profile.meta.sampleFreq} Hz` : "";
-  els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples${summary} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
+  els.fileInfo.innerHTML = `<b>${escapeHtml(_profileName)}</b> · ${profile.sampleCount.toLocaleString()} samples${summary} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
+}
+
+function setProfile(json, name) {
+  profile = new Profile(json);
+  els.empty.classList.add("hidden");
+  _profileName = name;
+  updateFileInfoSummary();
 
   scopes = new Scopes(profile);
   scopes.onChange = onScopesChanged;
 
-  // Metric switcher: shown only on profiles that carry multiple weight
-  // kinds. Switching the active kind reroutes profile.samples.weights and
-  // refreshes views — the analysis path stays oblivious.
-  if (profile.weightKinds && profile.weightKinds.length > 1) {
-    els.weightKind.innerHTML = "";
-    for (const k of profile.weightKinds) {
-      const opt = document.createElement("option");
-      opt.value = k.kind; opt.textContent = k.label;
-      if (k.kind === profile.weightKind) opt.selected = true;
-      els.weightKind.appendChild(opt);
-    }
-    els.weightKindFilter.classList.remove("hidden");
+  // For heaptrack-shaped profiles (both `bytes-leaked` and
+  // `bytes-allocated` columns present), default to live-only — what's
+  // currently held in memory is the headline question for memory analysis,
+  // not raw lifetime totals. The checkbox lets the user widen to include
+  // freed (transient) allocations on demand. Old caches whose meta says
+  // `bytes-allocated` get overridden too, so the default is consistent
+  // regardless of when the profile was parsed.
+  const byKind = profile.samples._byKind || {};
+  const hasLiveAndAll = !!(byKind["bytes-leaked"] && byKind["bytes-allocated"]);
+  if (hasLiveAndAll) {
+    profile.setActiveWeightKind("bytes-leaked");
+    els.includeFreed.checked = false;
+    els.includeFreedFilter.classList.remove("hidden");
   } else {
-    els.weightKindFilter.classList.add("hidden");
+    els.includeFreedFilter.classList.add("hidden");
   }
   profile.onWeightKindChange = () => {
+    updateFileInfoSummary();
     if (timeline) timeline.draw();
     if (activeView()) activeView().refresh();
   };
@@ -410,8 +429,11 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
-els.weightKind.addEventListener("change", () => {
-  if (profile) profile.setActiveWeightKind(els.weightKind.value);
+els.includeFreed.addEventListener("change", () => {
+  if (!profile) return;
+  // Live-only ↔ live+freed. The checkbox is only ever shown when both
+  // columns are present (see setProfile), so we don't need to guard here.
+  profile.setActiveWeightKind(els.includeFreed.checked ? "bytes-allocated" : "bytes-leaked");
 });
 els.hideScoped.addEventListener("change", () => {
   if (timeline) timeline.draw();
