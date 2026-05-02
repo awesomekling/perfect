@@ -530,10 +530,17 @@ button { font: inherit; color: inherit; }
   flex: 0 0 380px;
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
-  overflow: auto;
   font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
 .sample-sidebar.hidden { display: none; }
+.sample-sidebar-inner {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 .sidebar-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);

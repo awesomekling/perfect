@@ -47,6 +47,8 @@ const els = {
   thLive: $("#th-live"),
   samplesTab: document.querySelector('.tab[data-mode="samples"]'),
   sampleSidebar: $("#sample-sidebar"),
+  sampleSidebarInner: $("#sample-sidebar-inner"),
+  sampleResizer: $("#sample-resizer"),
   scopesSidebar: $("#scopes-sidebar"),
   scopesResizer: $("#scopes-resizer"),
   scopesList: $("#scopes-list"),
@@ -208,7 +210,7 @@ function setProfile(json, name) {
     scrollEl: els.treeScroll,
     treeEl: els.tree,
     statsEl: els.stats,
-    sidebarEl: els.sampleSidebar,
+    sidebarEl: els.sampleSidebarInner,
     getFilter,
     getHideScoped,
     getFocusPath: () => (treeView ? treeView._focusPath : []),
@@ -687,24 +689,26 @@ async function uploadAndLoad(file) {
   window.addEventListener("mouseup", () => { drag = null; });
 }
 
-// ----- Scopes sidebar resizer -----
-// Dragging the left edge widens / narrows the scopes sidebar. Width is held
-// inline so it persists for the session even if the sidebar is hidden and
-// reshown (e.g. all scopes removed, then a new one added).
-{
+// ----- Sidebar resizers -----
+// Dragging the left edge of either sidebar widens / narrows it. Width is
+// held inline so it persists for the session even if the sidebar gets
+// hidden and reshown (e.g. switching tabs, removing all scopes).
+function wireResizer(handleEl, sidebarEl, minW, maxW) {
   let drag = null;
-  els.scopesResizer.addEventListener("mousedown", (e) => {
-    drag = { startX: e.clientX, startW: els.scopesSidebar.getBoundingClientRect().width };
+  handleEl.addEventListener("mousedown", (e) => {
+    drag = { startX: e.clientX, startW: sidebarEl.getBoundingClientRect().width };
     e.preventDefault();
   });
   window.addEventListener("mousemove", (e) => {
     if (!drag) return;
     const dx = drag.startX - e.clientX; // dragging left = wider
-    const w = Math.max(220, Math.min(800, drag.startW + dx));
-    els.scopesSidebar.style.flex = `0 0 ${w}px`;
+    const w = Math.max(minW, Math.min(maxW, drag.startW + dx));
+    sidebarEl.style.flex = `0 0 ${w}px`;
   });
   window.addEventListener("mouseup", () => { drag = null; });
 }
+wireResizer(els.scopesResizer, els.scopesSidebar, 220, 800);
+wireResizer(els.sampleResizer, els.sampleSidebar, 240, 900);
 
 // ----- Initial profile list -----
 async function initEmpty() {
