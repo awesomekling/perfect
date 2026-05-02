@@ -15,6 +15,12 @@ export class Profile {
       tids: new Int32Array(s.tids),
       stackOffsets: new Uint32Array(s.stackOffsets),
       stackFrames: new Uint32Array(s.stackFrames),
+      // Optional per-sample weight. Heaptrack profiles set this to the
+      // allocation size (in bytes); perf profiles leave it absent and the
+      // analysis path treats every sample as weight 1. Stored as Float64 so
+      // sums of byte-scaled weights don't lose precision over millions of
+      // samples.
+      weights: s.weights ? new Float64Array(s.weights) : null,
     };
     this.startNs = this.meta.startNs;
     this.endNs = this.meta.endNs;
@@ -24,6 +30,15 @@ export class Profile {
     // represents 1/N seconds of on-CPU time.
     this.nsPerSample = this.meta.sampleFreq > 0 ? 1e9 / this.meta.sampleFreq : 0;
     this.timeKnown = this.nsPerSample > 0;
+    // Weighted profiles (e.g. heaptrack) sum sample weights instead of
+    // counting samples. weightKind drives unit labels in the UI.
+    this.weighted = this.samples.weights !== null;
+    this.weightKind = this.meta.weightKind || "samples";
+    this.weightLabel = this.meta.weightLabel || "samples";
+    // Optional process-RSS-over-time series, used as a timeline overlay.
+    this.rssSeries = json.rssSeries
+      ? { times: new Float64Array(json.rssSeries.times), bytes: new Float64Array(json.rssSeries.bytes) }
+      : null;
 
     // index threads by tid
     this.threadByTid = new Map();
@@ -113,6 +128,39 @@ export function fmtCount(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1000).toFixed(1) + "k";
   return String(n);
+}
+
+// Format a tree node's total/self in whichever unit the profile uses:
+//   - weighted (heaptrack):  bytes via fmtBytesShort
+//   - timeKnown (perf -F N): wall-clock time via fmtTimeShort (n × nsPerSample)
+//   - otherwise:             raw sample count
+// Centralized here so view code can keep its formatting branches shallow.
+export function fmtNodeWeight(profile, n) {
+  if (profile.weighted) return fmtBytesShort(n);
+  if (profile.timeKnown) return fmtTimeShort(n * profile.nsPerSample);
+  return n.toLocaleString();
+}
+
+// Long-form too, for tooltips: includes the raw count alongside the formatted
+// value so the user can confirm the underlying number.
+export function fmtNodeWeightLong(profile, n) {
+  if (profile.weighted) return `${fmtBytesShort(n)} (${Math.round(n).toLocaleString()} B)`;
+  if (profile.timeKnown) return `${n.toLocaleString()} samples · ${fmtTimeShort(n * profile.nsPerSample)}`;
+  return `${n.toLocaleString()} samples`;
+}
+
+// Compact byte formatter for weighted (heaptrack) profiles. Mirrors
+// fmtTimeShort's "fits in a tight column" feel.
+export function fmtBytesShort(b) {
+  if (!isFinite(b) || b <= 0) return "0";
+  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`;
+  if (b >= 1e10) return `${Math.round(b / 1e9)} GB`;
+  if (b >= 1e9)  return `${(b / 1e9).toFixed(2)} GB`;
+  if (b >= 1e7)  return `${Math.round(b / 1e6)} MB`;
+  if (b >= 1e6)  return `${(b / 1e6).toFixed(1)} MB`;
+  if (b >= 1e4)  return `${Math.round(b / 1e3)} kB`;
+  if (b >= 1e3)  return `${(b / 1e3).toFixed(1)} kB`;
+  return `${Math.round(b)} B`;
 }
 
 export function fmtPct(part, total) {

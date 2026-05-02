@@ -169,9 +169,9 @@ export class Timeline {
     const L = this.lanes.length;
     const tidToIdx = new Map();
     this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
-    const buckets = new Uint32Array(W * L);
+    const buckets = new Float64Array(W * L);
     const span = Math.max(1, this.viewEndNs - this.viewStartNs);
-    const { times, tids, stackOffsets, stackFrames } = this.profile.samples;
+    const { times, tids, stackOffsets, stackFrames, weights } = this.profile.samples;
     const lo = lowerBound(times, this.viewStartNs);
     const hi = upperBound(times, this.viewEndNs);
     // Match _drawLanes: when "hide scoped" is on, the lanes are painted
@@ -196,14 +196,28 @@ export class Timeline {
         if (!containsChain(stackFrames, off, end, local)) continue;
       }
       const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
-      buckets[li * W + px]++;
+      buckets[li * W + px] += weights ? weights[i] : 1;
     }
 
     // Match the density scaling of _drawLanes so highlight bar heights mean
     // the same thing as the base lane bars.
-    const pixelTimeNs = span / W;
-    const nsPerSample = this.profile.nsPerSample || pixelTimeNs;
-    const maxPerPixel = pixelTimeNs / nsPerSample;
+    let maxPerPixel;
+    if (weights) {
+      // For weighted profiles _drawLanes normalizes against the local peak
+      // across all visible bucket cells (lanes × pixels × colors). We can't
+      // see those values from here — they belong to the full lanes pass —
+      // but the overlay only needs to be visible relative to the lane
+      // backdrop, so re-deriving a peak from the highlight buckets alone
+      // gives a good-enough scaling: a row that contains the entire
+      // highlighted weight in one column hits the top.
+      let peak = 0;
+      for (let i = 0; i < buckets.length; i++) if (buckets[i] > peak) peak = buckets[i];
+      maxPerPixel = peak || 1;
+    } else {
+      const pixelTimeNs = span / W;
+      const nsPerSample = this.profile.nsPerSample || pixelTimeNs;
+      maxPerPixel = pixelTimeNs / nsPerSample;
+    }
 
     ctx.fillStyle = "#ffd24e";
     for (let li = 0; li < L; li++) {
@@ -297,6 +311,12 @@ export class Timeline {
     // Bucket visible samples per-lane per-pixel per-color. C = out-of-scope + N
     // palette colors; if there are no scopes (or no Scopes instance), C is 1
     // and we degenerate to the original single-color path.
+    //
+    // For weighted profiles (heaptrack: weight = bytes per allocation) we sum
+    // weights into buckets instead of counting, so bar height reflects byte
+    // throughput rather than alloc-event density. Float64 buckets keep byte
+    // sums exact for any view; Int counters are fine for the perf path but
+    // we use one type to keep this loop branch-free.
     const sampleColor = this.scopes ? this.scopes.sampleColorIdx() : null;
     const C = (this.scopes && this.scopes.size() > 0) ? SCOPE_PALETTE.length + 1 : 1;
     // "Hide scoped samples" mode subtracts the in-scope samples from the
@@ -307,9 +327,9 @@ export class Timeline {
     const L = this.lanes.length;
     const tidToIdx = new Map();
     this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
-    const buckets = new Uint32Array(W * L * C);
+    const buckets = new Float64Array(W * L * C);
     const span = Math.max(1, this.viewEndNs - this.viewStartNs);
-    const { times, tids } = this.profile.samples;
+    const { times, tids, weights } = this.profile.samples;
     const lo = lowerBound(times, this.viewStartNs);
     const hi = upperBound(times, this.viewEndNs);
     for (let i = lo; i < hi; i++) {
@@ -318,17 +338,28 @@ export class Timeline {
       const c = (C > 1 && sampleColor) ? sampleColor[i] : 0;
       if (hideScoped && c !== 0) continue;
       const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
-      buckets[(li * W + px) * C + c]++;
+      buckets[(li * W + px) * C + c] += weights ? weights[i] : 1;
     }
 
-    // Absolute density: each pixel column covers `pixelTimeNs` of wall time, and
-    // at the recorded sampling rate the maximum number of samples that could land
-    // in it is `pixelTimeNs / nsPerSample`. Cap at 1 so we use the full bar
-    // height when a thread is fully on-CPU. When zoomed in past one sample per
-    // pixel, maxPerPixel < 1, so individual samples render at full height.
-    const pixelTimeNs = span / W;
-    const nsPerSample = this.profile.nsPerSample || pixelTimeNs;
-    const maxPerPixel = pixelTimeNs / nsPerSample;
+    // Bar-height denominator. For unweighted (perf) profiles we use the
+    // absolute on-CPU density: each pixel covers `pixelTimeNs` of wall time
+    // and at the recorded sampling rate `pixelTimeNs / nsPerSample` is the
+    // most samples that could land there, so a fully on-CPU thread fills the
+    // bar. For weighted (heaptrack) profiles "100%" doesn't have a fixed
+    // physical meaning — bar height is byte throughput — so we normalize to
+    // the local peak across the visible window: the busiest pixel-column in
+    // any lane reaches the top, and quieter spans scale relative to it.
+    let maxPerPixel;
+    if (weights) {
+      let peak = 0;
+      const total = buckets.length;
+      for (let i = 0; i < total; i++) if (buckets[i] > peak) peak = buckets[i];
+      maxPerPixel = peak || 1;
+    } else {
+      const pixelTimeNs = span / W;
+      const nsPerSample = this.profile.nsPerSample || pixelTimeNs;
+      maxPerPixel = pixelTimeNs / nsPerSample;
+    }
 
     for (let li = 0; li < L; li++) {
       const lane = this.lanes[li];
@@ -336,7 +367,7 @@ export class Timeline {
       const baseY = y + 3, barH = LANE_H - 6;
       const rowOff = (li * W) * C;
       for (let px = 0; px < W; px++) {
-        // Total count across colors in this pixel column.
+        // Total weight across colors in this pixel column.
         let total = 0;
         for (let c = 0; c < C; c++) total += buckets[rowOff + px * C + c];
         if (total === 0) continue;

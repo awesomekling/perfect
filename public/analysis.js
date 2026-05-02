@@ -48,10 +48,16 @@ function newNode(ctx, fid) {
   return { id: ++ctx.nodeId, fid, total: 0, self: 0, children: new Map() };
 }
 
+// node.total / node.self semantics:
+//   - unweighted profiles (perf):       sample counts (each sample contributes 1)
+//   - weighted profiles   (heaptrack):  sum of per-sample weights (e.g. bytes)
+// `weights` below is `profile.samples.weights || null`, hoisted out of the
+// hot loop so the unweighted path doesn't pay for a branch per sample.
+
 export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnknown = false, focusPath = [] } = {}) {
   const ctx = makeCtx();
   const root = newNode(ctx, -1);
-  const { stackOffsets, stackFrames } = profile.samples;
+  const { stackOffsets, stackFrames, weights } = profile.samples;
   const hasFocus = focusPath.length > 0;
   for (const i of sampleIdxs) {
     const sampleOff = stackOffsets[i];
@@ -68,8 +74,9 @@ export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnkno
       off = sampleOff;
       end = focusedJ + 1;
     }
+    const w = weights ? weights[i] : 1;
     let cur = root;
-    root.total++;
+    root.total += w;
     // walk frames in display order:
     //   inverted=false (top-down): outermost..innermost  =>  end-1 .. off
     //   inverted=true  (bottom-up): innermost..outermost =>  off   .. end-1
@@ -85,17 +92,16 @@ export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnkno
         child = newNode(ctx, fid);
         cur.children.set(fid, child);
       }
-      child.total++;
+      child.total += w;
       cur = child;
       if (!firstChild) firstChild = child;
       lastChild = child;
     });
-    // Self time belongs on the sample's leaf frame. In the tree, the leaf is
-    // the last child for calltree (walked outer→inner) and the first child
-    // for inverted (walked inner→outer, so the innermost/leaf is reached
-    // first).
+    // Self belongs on the sample's leaf frame. In the tree, the leaf is the
+    // last child for calltree (walked outer→inner) and the first child for
+    // inverted (walked inner→outer, so the innermost/leaf is reached first).
     const leafNode = inverted ? firstChild : lastChild;
-    if (leafNode) leafNode.self++;
+    if (leafNode) leafNode.self += w;
   }
   if (inverted) attachTruncation(ctx, root, TRUNCATION_THRESHOLD, focusPath);
   return root;
@@ -134,16 +140,21 @@ function attachTruncation(ctx, node, threshold, focusPath) {
 export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, focusPath = [] } = {}) {
   const ctx = makeCtx();
   const F = profile.functions.length;
-  const totals = new Int32Array(F);
-  const selfs = new Int32Array(F);
+  // Float64 so weighted (heaptrack-style) byte sums don't overflow Int32 or
+  // lose precision past 2^24. For unweighted profiles we'd be fine with Int32
+  // but the memory delta on F-sized arrays is negligible (kB) and a single
+  // type keeps the hot loop branch-free.
+  const totals = new Float64Array(F);
+  const selfs = new Float64Array(F);
   const seenStamp = new Int32Array(F);
   let stamp = 0;
-  const { stackOffsets, stackFrames } = profile.samples;
+  const { stackOffsets, stackFrames, weights } = profile.samples;
   const hasFocus = focusPath.length > 0;
   // When focused: only count frames at/below the focused frame in each
   // matching sample. Samples that don't contain the focus chain drop out
   // entirely, and lazy expansion below is re-scoped the same way.
   const matching = hasFocus ? [] : sampleIdxs;
+  let rootTotal = 0;
   for (const i of sampleIdxs) {
     stamp++;
     const off = stackOffsets[i];
@@ -155,20 +166,22 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
       end = focusedJ + 1;
       matching.push(i);
     }
+    const w = weights ? weights[i] : 1;
+    rootTotal += w;
     if (end > off) {
       const leaf = stackFrames[off];
-      if (!(hideUnknown && profile.isUnknown(leaf))) selfs[leaf]++;
+      if (!(hideUnknown && profile.isUnknown(leaf))) selfs[leaf] += w;
     }
     for (let j = off; j < end; j++) {
       const fid = stackFrames[j];
       if (hideUnknown && profile.isUnknown(fid)) continue;
       if (seenStamp[fid] === stamp) continue;
       seenStamp[fid] = stamp;
-      totals[fid]++;
+      totals[fid] += w;
     }
   }
   const root = newNode(ctx, -1);
-  root.total = matching.length;
+  root.total = rootTotal;
   for (let fid = 0; fid < F; fid++) {
     if (totals[fid] === 0) continue;
     const node = newNode(ctx, fid);
@@ -210,11 +223,11 @@ export function computeScopeStats(profile, scopedFids, { sampleIdxs, hideUnknown
   const F = profile.functions.length;
   const inScope = new Uint8Array(F);
   for (const fid of scopedFids) if (fid >= 0 && fid < F) inScope[fid] = 1;
-  const totals = new Int32Array(F);
-  const selfs = new Int32Array(F);
+  const totals = new Float64Array(F);
+  const selfs = new Float64Array(F);
   const seenStamp = new Int32Array(F);
   let stamp = 0;
-  const { stackOffsets, stackFrames } = profile.samples;
+  const { stackOffsets, stackFrames, weights } = profile.samples;
   const hasFocus = focusPath.length > 0;
   let denom = 0;
   for (const i of sampleIdxs) {
@@ -227,10 +240,11 @@ export function computeScopeStats(profile, scopedFids, { sampleIdxs, hideUnknown
       if (focusedJ < 0) continue;
       end = focusedJ + 1;
     }
-    denom++;
+    const w = weights ? weights[i] : 1;
+    denom += w;
     if (end > off) {
       const leaf = stackFrames[off];
-      if (inScope[leaf] && !(hideUnknown && profile.isUnknown(leaf))) selfs[leaf]++;
+      if (inScope[leaf] && !(hideUnknown && profile.isUnknown(leaf))) selfs[leaf] += w;
     }
     for (let j = off; j < end; j++) {
       const fid = stackFrames[j];
@@ -238,7 +252,7 @@ export function computeScopeStats(profile, scopedFids, { sampleIdxs, hideUnknown
       if (hideUnknown && profile.isUnknown(fid)) continue;
       if (seenStamp[fid] === stamp) continue;
       seenStamp[fid] = stamp;
-      totals[fid]++;
+      totals[fid] += w;
     }
   }
   for (const fid of scopedFids) {
@@ -255,7 +269,7 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
   if (!node._lazy) return;
   node._lazy = false;
   const ctx = node._ctx;
-  const { stackOffsets, stackFrames } = profile.samples;
+  const { stackOffsets, stackFrames, weights } = profile.samples;
   const fid = node._lazyFid;
   const hasFocus = focusPath.length > 0;
   for (const i of node._lazySamples) {
@@ -283,6 +297,7 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
       }
     }
     if (k < 0) continue;
+    const w = weights ? weights[i] : 1;
     let cur = node;
     let lastChild = null;
     if (inverted) {
@@ -295,13 +310,13 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
           child = newNode(ctx, cfid);
           cur.children.set(cfid, child);
         }
-        child.total++;
+        child.total += w;
         cur = child;
         lastChild = child;
       }
-      // No self++ on caller chains: "self" only makes sense for leaf-side
-      // frames, and node.self (the leaf-side count of fid itself) was
-      // already set in buildTopFunctions.
+      // No self contribution on caller chains: "self" only makes sense for
+      // leaf-side frames, and node.self (the leaf-side weight of fid itself)
+      // was already set in buildTopFunctions.
     } else {
       // Walk inward (callees).
       for (let j = k - 1; j >= off; j--) {
@@ -312,11 +327,11 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
           child = newNode(ctx, cfid);
           cur.children.set(cfid, child);
         }
-        child.total++;
+        child.total += w;
         cur = child;
         lastChild = child;
       }
-      if (lastChild) lastChild.self++;
+      if (lastChild) lastChild.self += w;
       // If fid was the innermost frame (k === off), node.self was already
       // counted in buildTopFunctions — don't double-count.
     }

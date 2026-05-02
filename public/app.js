@@ -1,4 +1,4 @@
-import { Profile, fmtMs, fmtTimeShort } from "./profile.js";
+import { Profile, fmtMs, fmtTimeShort, fmtNodeWeight, fmtNodeWeightLong } from "./profile.js";
 import { Timeline } from "./timeline.js";
 import { TreeView } from "./treeview.js";
 import { SamplesView } from "./samplesview.js";
@@ -82,10 +82,19 @@ async function loadProfileByPath(p, name) {
 function setProfile(json, name) {
   profile = new Profile(json);
   els.empty.classList.add("hidden");
-  const onCpu = profile.timeKnown ? ` · ≈${fmtTimeShort(profile.sampleCount * profile.nsPerSample)} on-CPU` : "";
+  let summary = "";
+  if (profile.weighted) {
+    // Heaptrack-style: byte total is the headline; raw kept-sample count
+    // (after server-side downsampling) goes in the tooltip rather than the
+    // banner.
+    const totalBytes = profile.meta.totalAllocated || 0;
+    summary = ` · ${fmtNodeWeight(profile, totalBytes)} allocated`;
+  } else if (profile.timeKnown) {
+    summary = ` · ≈${fmtTimeShort(profile.sampleCount * profile.nsPerSample)} on-CPU`;
+  }
   const ev = profile.meta.eventName ? ` · ${escapeHtml(profile.meta.eventName)}` : "";
   const freq = profile.meta.sampleFreq ? ` @ ${profile.meta.sampleFreq} Hz` : "";
-  els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples${onCpu} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
+  els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples${summary} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
 
   scopes = new Scopes(profile);
   scopes.onChange = onScopesChanged;
@@ -202,7 +211,6 @@ function renderScopesSidebar() {
   const hideUnknown = els.hideUnknown.checked;
   const stats = computeScopeStats(profile, list.map((m) => m.fid), { sampleIdxs, hideUnknown, focusPath });
 
-  const nsPer = profile.timeKnown ? profile.nsPerSample : 0;
   let html = "";
   for (const m of list) {
     const label = profile.funcLabel(m.fid);
@@ -212,8 +220,12 @@ function renderScopesSidebar() {
     const s = stats.perFid.get(m.fid) || { total: 0, self: 0 };
     const totalPct = stats.denom ? (100 * s.total / stats.denom) : 0;
     const selfPct  = stats.denom ? (100 * s.self  / stats.denom) : 0;
-    const timeTxt = nsPer ? fmtTimeShort(s.total * nsPer) : `${s.total.toLocaleString()} samples`;
-    const statsTip = `${totalPct.toFixed(2)}% inclusive · ${selfPct.toFixed(2)}% self · ${s.total.toLocaleString()} of ${stats.denom.toLocaleString()} samples${nsPer ? ` · ≈${fmtTimeShort(s.total * nsPer)} inclusive` : ""}`;
+    // Second sidebar line is the inclusive amount in whichever unit the
+    // profile uses: bytes for heaptrack, time for sampled perf, raw count
+    // otherwise. Same formatter as tree-row totals so the user can compare
+    // across surfaces without unit-switching.
+    const inclusiveTxt = fmtNodeWeight(profile, s.total);
+    const statsTip = `${totalPct.toFixed(2)}% inclusive · ${selfPct.toFixed(2)}% self · ${fmtNodeWeightLong(profile, s.total)}`;
     html += `
       <div class="${cls}" data-fid="${m.fid}" title="${titleHint}">
         <button class="scope-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
@@ -223,7 +235,7 @@ function renderScopesSidebar() {
         </div>
         <div class="scope-stats" title="${statsTip}">
           <div class="scope-total-pct">${totalPct.toFixed(1)}%</div>
-          <div class="scope-self-pct">${timeTxt}</div>
+          <div class="scope-self-pct">${inclusiveTxt}</div>
         </div>
         <button class="scope-del" data-del="1" title="Remove scope">×</button>
       </div>`;

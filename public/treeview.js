@@ -3,7 +3,7 @@
 // this file is the view layer — flattening, virtualized rendering, keyboard
 // nav, search/match cursors, focus breadcrumbs, hover bridging.
 
-import { fmtMs, fmtCount, fmtPct, fmtTimeShort } from "./profile.js";
+import { fmtMs, fmtCount, fmtPct, fmtTimeShort, fmtNodeWeight, fmtNodeWeightLong } from "./profile.js";
 import {
   TRUNCATED_FID,
   buildCallTree,
@@ -84,17 +84,20 @@ export class TreeView {
     // show what *isn't* explained by the user's scopes. Inactive scopes
     // already contribute 0 to sampleColorIdx, so they don't filter.
     const inRange = [];
-    const { times, tids: stids } = this.profile.samples;
+    const { times, tids: stids, weights } = this.profile.samples;
     const hideScoped = this.getHideScoped();
     const sampleColor = (hideScoped && this.scopes) ? this.scopes.sampleColorIdx() : null;
+    let totalWeight = 0;
     for (let i = 0; i < times.length; i++) {
       const t = times[i];
       if (t < startNs || t > endNs) continue;
       if (tids && !tids.has(stids[i])) continue;
       if (sampleColor && sampleColor[i] !== 0) continue;
       inRange.push(i);
+      totalWeight += weights ? weights[i] : 1;
     }
     this.totalSamples = inRange.length;
+    this.totalWeight = totalWeight;
 
     const opts = { sampleIdxs: inRange, hideUnknown, focusPath: this._focusPath };
     let root;
@@ -141,10 +144,16 @@ export class TreeView {
     const { startNs, endNs, tids } = this.getFilter();
     const dur = endNs - startNs;
     const tidStr = tids ? `${tids.size} thread${tids.size === 1 ? "" : "s"}` : "all threads";
-    const onCpu = this.profile.timeKnown
-      ? ` · ≈${fmtTimeShort(this.totalSamples * this.profile.nsPerSample)} on-CPU`
-      : "";
-    this.statsEl.textContent = `${this.totalSamples.toLocaleString()} samples${onCpu} · ${tidStr} · ${fmtMs(dur)} window`;
+    let suffix = "";
+    if (this.profile.weighted) {
+      // For heap profiles the byte total is the headline metric; raw sample
+      // count is implementation detail (kept-after-downsampling) and goes
+      // into the tooltip.
+      suffix = ` · ${fmtNodeWeight(this.profile, this.totalWeight)} allocated`;
+    } else if (this.profile.timeKnown) {
+      suffix = ` · ≈${fmtTimeShort(this.totalSamples * this.profile.nsPerSample)} on-CPU`;
+    }
+    this.statsEl.textContent = `${this.totalSamples.toLocaleString()} samples${suffix} · ${tidStr} · ${fmtMs(dur)} window`;
   }
 
   _labelFor(fid) {
@@ -494,18 +503,10 @@ export class TreeView {
       const cls = `tree-row${isMatch ? " matched" : ""}${isCurrent ? " current-match" : ""}${isSelected ? " selected" : ""}${scopeColor ? " scoped" : ""}`;
       const scopeStyle = scopeColor ? ` --scope-color:${scopeColor};` : "";
       const scopeDotHtml = scopeColor ? `<span class="scope-dot" style="background:${scopeColor}" title="In scope"></span>` : "";
-      const totalTxt = profile.timeKnown
-        ? fmtTimeShort(node.total * profile.nsPerSample)
-        : node.total.toLocaleString();
-      const selfTxt = profile.timeKnown
-        ? fmtTimeShort(node.self * profile.nsPerSample)
-        : node.self.toLocaleString();
-      const totalTip = profile.timeKnown
-        ? `${node.total.toLocaleString()} samples · ${fmtTimeShort(node.total * profile.nsPerSample)} (${pct.toFixed(2)}%)`
-        : `${node.total.toLocaleString()} samples (${pct.toFixed(2)}%)`;
-      const selfTip = profile.timeKnown
-        ? `${node.self.toLocaleString()} samples · ${fmtTimeShort(node.self * profile.nsPerSample)} (${selfPct.toFixed(2)}%)`
-        : `${node.self.toLocaleString()} samples (${selfPct.toFixed(2)}%)`;
+      const totalTxt = fmtNodeWeight(profile, node.total);
+      const selfTxt = fmtNodeWeight(profile, node.self);
+      const totalTip = `${fmtNodeWeightLong(profile, node.total)} (${pct.toFixed(2)}%)`;
+      const selfTip = `${fmtNodeWeightLong(profile, node.self)} (${selfPct.toFixed(2)}%)`;
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;${scopeStyle}">
           <div class="col-total" title="${totalTip}">

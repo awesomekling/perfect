@@ -12,6 +12,7 @@ import { pipeline } from "node:stream/promises";
 import { createReadStream } from "node:fs";
 
 import { parsePerfData } from "./parse-perf.js";
+import { parseHeaptrackData } from "./parse-heaptrack.js";
 import { Profile } from "./public/profile.js";
 import {
   filterSampleIndices,
@@ -67,22 +68,37 @@ async function sendStatic(req, res) {
   }
 }
 
+// Decide which parser owns a given file based on its name. Heaptrack files
+// follow the convention `heaptrack.<comm>.<pid>.zst` (or .gz, or unsuffixed
+// for older versions); anything else with a `.data` suffix is assumed to be
+// perf script output. Files we don't recognize don't show up in the picker.
+function profileKindForName(name) {
+  const lower = name.toLowerCase();
+  if (lower.startsWith("heaptrack.") || lower.endsWith(".heaptrack") ||
+      lower.endsWith(".heaptrack.zst") || lower.endsWith(".heaptrack.gz")) {
+    return "heaptrack";
+  }
+  if (lower.endsWith(".data")) return "perf";
+  return null;
+}
+
 async function listProfiles() {
   const entries = await fsp.readdir(process.cwd(), { withFileTypes: true });
   const out = [];
   for (const e of entries) {
     if (!e.isFile()) continue;
-    if (!e.name.endsWith(".data")) continue;
+    const kind = profileKindForName(e.name);
+    if (!kind) continue;
     const full = path.resolve(process.cwd(), e.name);
     const st = await fsp.stat(full);
-    out.push({ name: e.name, path: full, size: st.size, mtimeMs: st.mtimeMs });
+    out.push({ name: e.name, path: full, size: st.size, mtimeMs: st.mtimeMs, kind });
   }
   return out;
 }
 
 // Bump SCHEMA whenever the parsed-profile shape changes, so old caches are
 // ignored on the next request.
-const PARSED_SCHEMA = 2;
+const PARSED_SCHEMA = 3;
 function cacheKey(absPath, mtimeMs) {
   const h = crypto.createHash("sha256").update(absPath + ":" + mtimeMs + ":v" + PARSED_SCHEMA).digest("hex").slice(0, 16);
   return path.join(CACHE, `profile-${h}.json.gz`);
@@ -100,12 +116,20 @@ async function loadProfile(absPath) {
     return cache;
   } catch {}
   if (inFlight.has(cache)) return inFlight.get(cache);
+  const kind = profileKindForName(path.basename(absPath)) || "perf";
   const job = (async () => {
     const t0 = Date.now();
-    process.stderr.write(`parsing ${absPath} ...\n`);
-    const profile = await parsePerfData(absPath, {
-      onProgress: ({ lines, samples }) => process.stderr.write(`\r  ${lines} lines, ${samples} samples`),
-    });
+    process.stderr.write(`parsing ${absPath} (${kind}) ...\n`);
+    const profile = kind === "heaptrack"
+      ? await parseHeaptrackData(absPath, {
+          onProgress: ({ phase, lines, kept, allocs }) => {
+            // Heaptrack parser logs its own phase headers; the per-line ticks
+            // are too noisy for the CR-overwrite style used for perf.
+          },
+        })
+      : await parsePerfData(absPath, {
+          onProgress: ({ lines, samples }) => process.stderr.write(`\r  ${lines} lines, ${samples} samples`),
+        });
     process.stderr.write(`\n  done in ${Date.now() - t0}ms\n`);
     const tmp = cache + ".tmp";
     const json = JSON.stringify(profile);
@@ -257,6 +281,13 @@ function nodeFields(profile, node, totalRef) {
     out.totalNs = Math.round(node.total * profile.nsPerSample);
     out.selfNs = Math.round(node.self * profile.nsPerSample);
   }
+  if (profile.weighted) {
+    // node.total/.self are already in profile units (e.g. bytes for
+    // heaptrack); expose them under a clearer alias so agents don't have to
+    // remember which kind of profile they're looking at.
+    out.totalBytes = Math.round(node.total);
+    out.selfBytes = Math.round(node.self);
+  }
   return out;
 }
 
@@ -397,22 +428,24 @@ async function apiFind(req, res, u) {
   const hideUnknown = parseBool(u, "hideUnknown", true);
   // Per-function totals across all samples (unfiltered), so "find" is just a
   // symbol lookup with sample counts attached — not a window-scoped query.
+  // Float64 totals so weighted (heaptrack) byte sums stay exact.
   const F = profile.functions.length;
-  const totals = new Int32Array(F);
-  const selfs = new Int32Array(F);
+  const totals = new Float64Array(F);
+  const selfs = new Float64Array(F);
   const seen = new Int32Array(F);
   let stamp = 0;
-  const { stackOffsets, stackFrames, times } = profile.samples;
+  const { stackOffsets, stackFrames, times, weights } = profile.samples;
   for (let i = 0; i < times.length; i++) {
     stamp++;
     const off = stackOffsets[i];
     const end = stackOffsets[i + 1];
-    if (end > off) selfs[stackFrames[off]]++;
+    const w = weights ? weights[i] : 1;
+    if (end > off) selfs[stackFrames[off]] += w;
     for (let j = off; j < end; j++) {
       const fid = stackFrames[j];
       if (seen[fid] === stamp) continue;
       seen[fid] = stamp;
-      totals[fid]++;
+      totals[fid] += w;
     }
   }
   const matches = [];
