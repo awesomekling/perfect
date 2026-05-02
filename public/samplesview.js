@@ -216,12 +216,20 @@ export class SamplesView {
     const last = Math.min(this.samples.length, Math.ceil((top + h) / ROW_H) + 5);
     const profile = this.profile;
     const { times, tids, stackOffsets, stackFrames, weights } = profile.samples;
-    // For heap captures: stride-scaled weight ÷ stride = the actual
-    // allocation size in bytes. Showing the per-allocation size lets the
-    // user spot a 500 MB single-shot vs. the same total spread across
-    // thousands of small allocs.
-    const stride = profile.meta.downsampleStride || 1;
-    const showSize = profile.weighted && weights;
+    // True per-allocation size for heap captures, recovered from the
+    // ratio of two weight columns. Both are scaled the same way per
+    // kept event (`* allocCount / kept`), so the ratio collapses to
+    // the underlying allocInfo's `info.size` exactly:
+    //   weights_allocated[i] = allocCount * size / kept
+    //   weights_count[i]     = allocCount / kept
+    //   weights_allocated[i] / weights_count[i] = size
+    // The previous formula (weight / stride) was correct only when
+    // weights carried `size * stride` directly; it stayed close but
+    // not exact after the per-allocInfo weighting change landed.
+    const wAlloc = profile.samples._byKind ? profile.samples._byKind["bytes-allocated"] : null;
+    const wCount = profile.samples._byKind ? profile.samples._byKind["alloc-count"] : null;
+    const showSize = profile.weighted && wAlloc && wCount;
+    const sizeOf = (i) => (showSize && wCount[i] > 0) ? (wAlloc[i] / wCount[i]) : 0;
 
     let html = "";
     for (let i = first; i < last; i++) {
@@ -242,8 +250,9 @@ export class SamplesView {
       const tlabel = (profile.threadByTid.get(tid)?.primaryComm) || `tid ${tid}`;
       const isSelected = i === this._selectedIdx;
       const cls = `tree-row${isSelected ? " selected" : ""}`;
+      const sz = sizeOf(sIdx);
       const sizeCol = showSize
-        ? `<div class="col-size" title="${Math.round(weights[sIdx] / stride).toLocaleString()} B per allocation">${fmtBytesShort(weights[sIdx] / stride)}</div>`
+        ? `<div class="col-size" title="${Math.round(sz).toLocaleString()} B per allocation">${fmtBytesShort(sz)}</div>`
         : "";
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${i * ROW_H}px; left:0; right:0;">
@@ -277,9 +286,12 @@ export class SamplesView {
     const end = stackOffsets[sIdx + 1];
     const tlabel = (profile.threadByTid.get(tid)?.primaryComm) || `tid ${tid}`;
     const depth = end - off;
-    const stride = profile.meta.downsampleStride || 1;
-    const sizeRow = (profile.weighted && weights)
-      ? `<b>Size</b><span class="v">${fmtBytesShort(weights[sIdx] / stride)}</span>`
+    // Same per-allocation-size derivation as _renderVisible — the ratio
+    // bytes-allocated / alloc-count cancels the kept-event scaling.
+    const wAlloc = profile.samples._byKind ? profile.samples._byKind["bytes-allocated"] : null;
+    const wCount = profile.samples._byKind ? profile.samples._byKind["alloc-count"] : null;
+    const sizeRow = (profile.weighted && wAlloc && wCount && wCount[sIdx] > 0)
+      ? `<b>Size</b><span class="v">${fmtBytesShort(wAlloc[sIdx] / wCount[sIdx])}</span>`
       : "";
 
     const title = profile.weighted ? "Allocation stack" : "Sample stack";
