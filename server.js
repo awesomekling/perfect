@@ -98,7 +98,7 @@ async function listProfiles() {
 
 // Bump SCHEMA whenever the parsed-profile shape changes, so old caches are
 // ignored on the next request.
-const PARSED_SCHEMA = 4;
+const PARSED_SCHEMA = 5;
 function cacheKey(absPath, mtimeMs) {
   const h = crypto.createHash("sha256").update(absPath + ":" + mtimeMs + ":v" + PARSED_SCHEMA).digest("hex").slice(0, 16);
   return path.join(CACHE, `profile-${h}.json.gz`);
@@ -107,6 +107,119 @@ function cacheKey(absPath, mtimeMs) {
 // In-flight parse jobs, keyed by cache path, so concurrent requests for the
 // same profile share one parse instead of stampeding the parser.
 const inFlight = new Map();
+
+// Stream-serialize a profile into a gzip stream. Big numeric columns
+// (samples.{times,tids,stackOffsets,stackFrames,weights,...} and the rss
+// series) travel as chunked base64 arrays — chunks of ~8MB raw, ~11MB
+// base64. Two reasons we can't just JSON.stringify the whole thing:
+//
+//   1) Plain-Array JSON for ~80M Uint32 entries (stackFrames on a
+//      WebContent capture) blows past V8's single-string ceiling.
+//   2) Even base64 as a single string would: 80M*4 bytes = 320MB raw →
+//      ~430MB base64, also over V8's ceiling. Chunking keeps every
+//      individual JS string well under that limit.
+//
+// On disk: `"<field>": ["@b64:<TypeName>:<base64>", "@b64:<TypeName>:<base64>", ...]`.
+// The Profile constructor detects the array shape and merges chunks back
+// into one typed array.
+const TYPED_CTORS = {
+  Float64Array, Float32Array, Int32Array, Uint32Array, Uint8Array,
+};
+
+// 8MB raw → ~11MB base64. Multiple of 3 to avoid base64 padding mid-chunk.
+const ENC_CHUNK_BYTES = (1 << 23) - ((1 << 23) % 3);
+
+function asTyped(arr, kind) {
+  const ctor = TYPED_CTORS[kind];
+  if (arr instanceof ctor) return arr;
+  return new ctor(arr);
+}
+
+// Map of which sample-level columns to encode as which typed-array kind.
+// Anything not in here passes through JSON.stringify unchanged.
+const BIG_SAMPLE_KINDS = {
+  times:        "Float64Array",
+  tids:         "Int32Array",
+  stackOffsets: "Uint32Array",
+  stackFrames:  "Uint32Array",
+  weights:      "Float64Array",
+};
+const BIG_RSS_KINDS = { times: "Float64Array", bytes: "Float64Array" };
+
+async function streamSerializeProfile(profile, gz) {
+  // Fire-and-wait helper so backpressure on the gzip stream gets honored
+  // (otherwise we could buffer hundreds of MB internally).
+  const writeAndDrain = (s) => {
+    if (gz.write(s)) return undefined;
+    return new Promise((res) => gz.once("drain", res));
+  };
+  const encodeBigChunked = async (typedArr, kind) => {
+    await writeAndDrain("[");
+    const buf = Buffer.from(typedArr.buffer, typedArr.byteOffset, typedArr.byteLength);
+    let first = true;
+    for (let off = 0; off < buf.length; off += ENC_CHUNK_BYTES) {
+      const end = Math.min(off + ENC_CHUNK_BYTES, buf.length);
+      if (!first) await writeAndDrain(",");
+      first = false;
+      const chunk = buf.subarray(off, end).toString("base64");
+      await writeAndDrain('"@b64:' + kind + ":" + chunk + '"');
+    }
+    if (first) {
+      // Empty buffer: still emit a single empty chunk so the decoder has
+      // a uniform shape to match against.
+      await writeAndDrain('"@b64:' + kind + ':"');
+    }
+    await writeAndDrain("]");
+  };
+
+  await writeAndDrain("{");
+  await writeAndDrain('"meta":' + JSON.stringify(profile.meta));
+  await writeAndDrain(',"threads":' + JSON.stringify(profile.threads));
+  await writeAndDrain(',"strings":' + JSON.stringify(profile.strings));
+  await writeAndDrain(',"dsos":' + JSON.stringify(profile.dsos));
+  await writeAndDrain(',"functions":' + JSON.stringify(profile.functions));
+
+  if (profile.samples) {
+    await writeAndDrain(',"samples":{');
+    let first = true;
+    const writeKey = async (k) => { await writeAndDrain((first ? "" : ",") + JSON.stringify(k) + ":"); first = false; };
+    for (const [k, kind] of Object.entries(BIG_SAMPLE_KINDS)) {
+      const v = profile.samples[k];
+      if (v == null) continue;
+      await writeKey(k);
+      await encodeBigChunked(asTyped(v, kind), kind);
+    }
+    if (profile.samples.weightsByKind) {
+      await writeKey("weightsByKind");
+      await writeAndDrain("{");
+      let firstK = true;
+      for (const [wk, wv] of Object.entries(profile.samples.weightsByKind)) {
+        if (!firstK) await writeAndDrain(",");
+        firstK = false;
+        await writeAndDrain(JSON.stringify(wk) + ":");
+        await encodeBigChunked(asTyped(wv, "Float64Array"), "Float64Array");
+      }
+      await writeAndDrain("}");
+    }
+    await writeAndDrain("}");
+  }
+
+  if (profile.rssSeries) {
+    await writeAndDrain(',"rssSeries":{');
+    let first = true;
+    for (const [k, kind] of Object.entries(BIG_RSS_KINDS)) {
+      const v = profile.rssSeries[k];
+      if (v == null) continue;
+      if (!first) await writeAndDrain(",");
+      first = false;
+      await writeAndDrain(JSON.stringify(k) + ":");
+      await encodeBigChunked(asTyped(v, kind), kind);
+    }
+    await writeAndDrain("}");
+  }
+
+  await writeAndDrain("}");
+}
 
 async function loadProfile(absPath) {
   const st = await fsp.stat(absPath);
@@ -132,11 +245,14 @@ async function loadProfile(absPath) {
         });
     process.stderr.write(`\n  done in ${Date.now() - t0}ms\n`);
     const tmp = cache + ".tmp";
-    const json = JSON.stringify(profile);
-    const gz = zlib.gzipSync(json, { level: 6 });
-    await fsp.writeFile(tmp, gz);
+    const out = fs.createWriteStream(tmp);
+    const gz = zlib.createGzip({ level: 6 });
+    gz.pipe(out);
+    await streamSerializeProfile(profile, gz);
+    await new Promise((res, rej) => { gz.end(); out.on("finish", res); out.on("error", rej); });
     await fsp.rename(tmp, cache);
-    process.stderr.write(`  cached ${cache} (${gz.length} bytes)\n`);
+    const sz = (await fsp.stat(cache)).size;
+    process.stderr.write(`  cached ${cache} (${sz} bytes)\n`);
     return cache;
   })();
   inFlight.set(cache, job);

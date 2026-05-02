@@ -18,11 +18,15 @@ import { createInterface } from "node:readline";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
-// Cap kept-sample count regardless of file size. ~2M samples is enough for
-// any reasonable view (perf profiles in this repo run 5-10M and feel fine,
-// but we already inflate stack-frame counts via inline expansion below, so
-// stay a bit more conservative).
-const TARGET_SAMPLES = 2_000_000;
+// Cap kept-sample count regardless of file size. The ceiling is currently
+// driven by the wire/parse format: a single JSON-string response above
+// ~256MB exceeds V8's string limit on the browser side. Per-sample bytes
+// in the encoded JSON are dominated by stackFrames (avg ~40 inline-expanded
+// frames × 4 bytes × 4/3 base64 ≈ 220B/sample), and the four weight
+// columns add ~50B more, so 500K samples lands around 130MB encoded —
+// comfortably parseable. A binary transport would unblock 2-5M; that's
+// next.
+const TARGET_SAMPLES = 500_000;
 
 // Stream lines from a possibly-compressed heaptrack file. Returns a promise
 // that resolves once the input is exhausted.

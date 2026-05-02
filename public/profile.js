@@ -1,6 +1,54 @@
 // Client-side profile model. Wraps the JSON the server returns.
-// The big arrays (samples.times, .tids, .stackOffsets, .stackFrames) are
-// converted to typed arrays once here.
+// Big numeric columns travel as base64-encoded typed arrays (see
+// `serializeProfile()` in server.js); they're decoded into the matching
+// typed-array view here in one allocation per column.
+
+const TYPED_CTORS = {
+  Float64Array, Float32Array, Int32Array, Uint32Array, Uint8Array,
+};
+
+// Accept any of:
+//   - chunked: array of "@b64:Type:base64" strings, decoded per-chunk and
+//     concatenated. The on-the-wire shape for big columns; chunked so no
+//     individual JS string blows past V8's ~256MB ceiling on either side.
+//   - single string "@b64:Type:base64" (small fields).
+//   - plain Array (unit tests, legacy single-column profiles).
+// Returns a typed array of the requested kind.
+function decodeTypedArray(value, defaultKind) {
+  if (value == null) return null;
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "string" && value[0].startsWith("@b64:")) {
+    return decodeChunkedB64(value, defaultKind);
+  }
+  if (typeof value === "string" && value.startsWith("@b64:")) {
+    return decodeChunkedB64([value], defaultKind);
+  }
+  return new TYPED_CTORS[defaultKind](value);
+}
+
+function decodeChunkedB64(chunks, defaultKind) {
+  // First pass: decode each chunk's base64 into a Uint8Array. atob's
+  // `.charCodeAt`-loop conversion is unfortunate but works on any browser
+  // without needing a polyfill or fetch wrapper.
+  let kind = defaultKind;
+  const buffers = new Array(chunks.length);
+  let total = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const s = chunks[i];
+    const sep = s.indexOf(":", 5);
+    if (i === 0) kind = s.slice(5, sep);
+    const b = s.slice(sep + 1);
+    const bin = atob(b);
+    const u8 = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) u8[j] = bin.charCodeAt(j);
+    buffers[i] = u8;
+    total += u8.length;
+  }
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const u of buffers) { merged.set(u, off); off += u.length; }
+  const ctor = TYPED_CTORS[kind] || TYPED_CTORS[defaultKind];
+  return new ctor(merged.buffer);
+}
 
 export class Profile {
   constructor(json) {
@@ -18,17 +66,17 @@ export class Profile {
     const weightsByKind = {};
     if (s.weightsByKind) {
       for (const [kind, arr] of Object.entries(s.weightsByKind)) {
-        weightsByKind[kind] = new Float64Array(arr);
+        weightsByKind[kind] = decodeTypedArray(arr, "Float64Array");
       }
     } else if (s.weights) {
       // Single-column profile (legacy or perf): wrap into the one-kind map.
-      weightsByKind[this.meta.weightKind || "samples"] = new Float64Array(s.weights);
+      weightsByKind[this.meta.weightKind || "samples"] = decodeTypedArray(s.weights, "Float64Array");
     }
     this.samples = {
-      times: new Float64Array(s.times),
-      tids: new Int32Array(s.tids),
-      stackOffsets: new Uint32Array(s.stackOffsets),
-      stackFrames: new Uint32Array(s.stackFrames),
+      times: decodeTypedArray(s.times, "Float64Array"),
+      tids: decodeTypedArray(s.tids, "Int32Array"),
+      stackOffsets: decodeTypedArray(s.stackOffsets, "Uint32Array"),
+      stackFrames: decodeTypedArray(s.stackFrames, "Uint32Array"),
       // The active weight column. Replaced by setActiveWeightKind(); kept
       // null when there are no weights at all (perf path).
       weights: null,
@@ -50,7 +98,10 @@ export class Profile {
     this.setActiveWeightKind(this.meta.weightKind || "samples");
     // Optional process-RSS-over-time series, used as a timeline overlay.
     this.rssSeries = json.rssSeries
-      ? { times: new Float64Array(json.rssSeries.times), bytes: new Float64Array(json.rssSeries.bytes) }
+      ? {
+          times: decodeTypedArray(json.rssSeries.times, "Float64Array"),
+          bytes: decodeTypedArray(json.rssSeries.bytes, "Float64Array"),
+        }
       : null;
 
     // index threads by tid
