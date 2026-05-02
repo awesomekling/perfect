@@ -352,7 +352,18 @@ button { font: inherit; color: inherit; }
 .tree-header > div { padding: 4px 8px; border-right: 1px solid var(--border); }
 .tree-header.hidden { display: none; }
 .col-symbol { flex: 1 1 auto; min-width: 0; }
-.col-total, .col-self { flex: 0 0 130px; text-align: right; }
+.col-total, .col-self, .col-live { flex: 0 0 130px; text-align: right; }
+.col-live.hidden { display: none; }
+/* Active-sort column: subtle accent + arrow rendered via ::after. */
+.tree-header .sortable { cursor: pointer; user-select: none; }
+.tree-header .sortable:hover { color: var(--text); }
+.tree-header .sortable.sort-active { color: var(--text); }
+.tree-header .sortable.sort-active::after {
+  content: " ▾";
+  font-size: 9px;
+  opacity: 0.8;
+}
+.tree-header .sortable.sort-active.sort-asc::after { content: " ▴"; }
 .col-dso { flex: 0 0 240px; }
 .col-time { flex: 0 0 110px; text-align: right; font-variant-numeric: tabular-nums; }
 .col-size { flex: 0 0 90px; text-align: right; font-variant-numeric: tabular-nums; padding: 0 8px; }
@@ -707,6 +718,8 @@ button { font: inherit; color: inherit; }
   margin-left: 6px;
   font-variant-numeric: tabular-nums;
 }
+.tree-row .num-zero { color: var(--text-dim); opacity: 0.4; }
+.tree-row .col-live { padding: 0 8px; }
 .tree-row .col-dso {
   color: var(--text-dim);
   white-space: nowrap;

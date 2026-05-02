@@ -41,7 +41,9 @@ const els = {
   treeFilters: $("#tree-filters"),
   treeHeaderTree: $("#tree-header-tree"),
   treeHeaderSamples: $("#tree-header-samples"),
+  treeHeaderTree: $("#tree-header-tree"),
   thSize: $("#th-size"),
+  thLive: $("#th-live"),
   samplesTab: document.querySelector('.tab[data-mode="samples"]'),
   sampleSidebar: $("#sample-sidebar"),
   scopesSidebar: $("#scopes-sidebar"),
@@ -228,6 +230,10 @@ function setProfile(json, name) {
   if (els.thSize) {
     els.thSize.classList.toggle("hidden", !profile.weighted);
   }
+  if (els.thLive) {
+    els.thLive.classList.toggle("hidden", !profile.weighted);
+  }
+  refreshSortIndicators();
   applyModeUI();
   activeView().refresh();
   renderScopesSidebar();
@@ -447,6 +453,29 @@ for (const tab of document.querySelectorAll(".tab")) {
     if (!treeView) return;
     applyModeUI();
     activeView().refresh();
+  });
+}
+
+// Sortable column headers in the tree view. Click cycles direction on the
+// active column or jumps to descending on a new one. The actual reorder
+// happens in TreeView.setSort; the indicator markup is owned here so it
+// can be refreshed on profile load too.
+function refreshSortIndicators() {
+  if (!els.treeHeaderTree) return;
+  const key = treeView ? treeView.sortKey : "total";
+  const desc = treeView ? treeView.sortDesc : true;
+  for (const h of els.treeHeaderTree.querySelectorAll(".sortable")) {
+    const active = h.dataset.sort === key;
+    h.classList.toggle("sort-active", active);
+    h.classList.toggle("sort-asc", active && !desc);
+  }
+}
+if (els.treeHeaderTree) {
+  els.treeHeaderTree.addEventListener("click", (e) => {
+    const h = e.target.closest(".sortable");
+    if (!h || !treeView) return;
+    treeView.setSort(h.dataset.sort);
+    refreshSortIndicators();
   });
 }
 

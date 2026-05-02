@@ -24,6 +24,17 @@ const WEIGHT_VERB = {
   "alloc-count":     "allocations",
 };
 
+// Sortable-column key → field-extractor on a tree node. Each column header
+// in the markup carries a data-sort attribute matching one of these keys.
+// `total` and `self` use a self-tiebreaker to stabilise ordering when two
+// siblings have identical primary cost (common for synthetic [truncated]
+// rows and for unweighted profiles where many leaves contribute equally).
+const SORT_FIELDS = {
+  total: (n) => n.total,
+  self:  (n) => n.self,
+  live:  (n) => n.totalLive,
+};
+
 export class TreeView {
   constructor({ profile, scopes, scrollEl, treeEl, statsEl, getMode, getFilter, getSearch, getHideUnknown, getHideScoped, getAutoExpand, getTopInverted }) {
     this.profile = profile;
@@ -44,6 +55,13 @@ export class TreeView {
     this.flatRows = []; // [{node, depth, isMatch}] currently visible
     this.tree = null;
     this.totalSamples = 0;
+    // Active sort: column key + descending flag. Defaults match the long-
+    // standing "biggest at the top" behavior; clicking a header cycles to
+    // descending-by-that-key first, then toggles direction on subsequent
+    // clicks. The Live column is shown only on heap profiles, so the
+    // "live" sort is harmless on perf profiles (every node has 0).
+    this.sortKey = "total";
+    this.sortDesc = true;
     this._matchRowIndices = []; // indices into flatRows for matched rows
     this._currentMatch = -1;
     this.onMatchesChange = null; // (cur, total) => void
@@ -320,9 +338,10 @@ export class TreeView {
 
     // Flatten the tree using effective expansion. No filtering — the full
     // (effectively-expanded) tree is shown. Matches are flagged inline.
+    const cmp = this._comparator();
     const isExp = (id) => this.expanded.has(id) || this._searchExpanded.has(id);
     const flatten = (node, depth) => {
-      const sorted = sortChildren(node);
+      const sorted = sortChildren(node, cmp);
       for (const child of sorted) {
         const isMatch = matches ? matches(child.fid) : false;
         rows.push({ node: child, depth, isMatch });
@@ -367,6 +386,41 @@ export class TreeView {
   // tree. Used when only the visual layer needs updating (e.g. scope colors).
   rerenderRows() {
     if (this._attached) this._renderVisible();
+  }
+
+  // Build the comparator the current sort key/direction implies. Tied
+  // primary keys fall through to total (so a "live" sort still orders
+  // sensibly when two rows are both 0 live).
+  _comparator() {
+    const get = SORT_FIELDS[this.sortKey] || SORT_FIELDS.total;
+    const dir = this.sortDesc ? -1 : 1;
+    return (a, b) => {
+      const d = get(b) - get(a); // descending in primary
+      if (d !== 0) return dir < 0 ? d : -d;
+      // Tiebreak: total. Then self. Direction follows the primary so the
+      // overall sort feels consistent under reversal.
+      const dt = b.total - a.total;
+      if (dt !== 0) return dir < 0 ? dt : -dt;
+      const ds = b.self - a.self;
+      return dir < 0 ? ds : -ds;
+    };
+  }
+
+  // Public API for header clicks: same key twice flips direction; new key
+  // resets to descending. Re-flattens to apply the new order without
+  // rebuilding the tree itself.
+  setSort(key, desc) {
+    if (!SORT_FIELDS[key]) return;
+    if (key === this.sortKey && desc === undefined) {
+      this.sortDesc = !this.sortDesc;
+    } else {
+      this.sortKey = key;
+      this.sortDesc = desc !== undefined ? desc : true;
+    }
+    if (this.tree) {
+      this._buildFlatRows();
+      if (this._attached) this._renderVisible();
+    }
   }
 
   // The fid of the currently-selected tree row, or null when nothing is
@@ -543,10 +597,26 @@ export class TreeView {
       const selfNum = showCount && node.selfCount > 0
         ? `${selfTxt} <span class="num-sub">${fmtCount(node.selfCount)}</span>`
         : `${selfTxt}${node.self > 0 ? ` <span class="pct">${selfPct.toFixed(1)}%</span>` : ""}`;
+      // "Live" column: bytes still allocated at end of capture (heaptrack's
+      // leaked column). Only emitted when the profile carries this data;
+      // hidden via the column header's hidden class on perf profiles. The
+      // dim "transient" suffix in the tooltip helps the user mental-model
+      // the relationship: total = live + transient.
+      const liveTotal = node.totalLive || 0;
+      const transient = Math.max(0, node.total - liveTotal);
+      const liveNum = profile.weighted && liveTotal > 0
+        ? `<span class="num">${fmtNodeWeight(profile, liveTotal)}</span>`
+        : (profile.weighted ? `<span class="num num-zero">—</span>` : "");
+      const liveTip = profile.weighted
+        ? `${fmtNodeWeightLong(profile, liveTotal)} still allocated · ${fmtNodeWeightLong(profile, transient)} freed`
+        : "";
       const totalTip = `${fmtNodeWeightLong(profile, node.total)} (${pct.toFixed(2)}%)`
         + (showCount && node.totalCount > 0 ? ` · ${Math.round(node.totalCount).toLocaleString()} allocations` : "");
       const selfTip = `${fmtNodeWeightLong(profile, node.self)} (${selfPct.toFixed(2)}%)`
         + (showCount && node.selfCount > 0 ? ` · ${Math.round(node.selfCount).toLocaleString()} allocations` : "");
+      const liveCol = profile.weighted
+        ? `<div class="col-live" title="${liveTip}">${liveNum}</div>`
+        : "";
       html += `
         <div class="${cls}" data-i="${i}" style="position:absolute; top:${top}px; left:0; right:0;${scopeStyle}">
           <div class="col-total" title="${totalTip}">
@@ -557,6 +627,7 @@ export class TreeView {
             <span class="bar" style="width:${selfPct.toFixed(2)}%"></span>
             <span class="num">${selfNum}</span>
           </div>
+          ${liveCol}
           <div class="col-symbol" style="padding-left:${8 + depth * 14}px">
             <span class="twisty ${expandable ? "expandable" : ""}" data-twisty="1">${twisty}</span>
             ${scopeDotHtml}<span class="sym ${isUnknown ? "unknown" : ""} ${isTruncated ? "truncated" : ""}" title="${escapeHtml(label)}">${labelHtml}</span>

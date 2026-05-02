@@ -69,8 +69,9 @@
         <div class="bottom-body">
           <div class="tree-pane">
             <div class="tree-header" id="tree-header-tree">
-              <div class="col-total" id="th-total" title="Cumulative cost of this function (including its callees)">Total</div>
-              <div class="col-self" id="th-self" title="Cost attributed directly to this function (excluding callees)">Self</div>
+              <div class="col-total sortable" id="th-total" data-sort="total" title="Cumulative cost of this function (including its callees). Click to sort by this column.">Total</div>
+              <div class="col-self sortable" id="th-self" data-sort="self" title="Cost attributed directly to this function (excluding callees). Click to sort.">Self</div>
+              <div class="col-live sortable hidden" id="th-live" data-sort="live" title="Bytes still allocated at end of capture (persistent / leaked). Click to sort.">Live</div>
               <div class="col-symbol">Symbol</div>
               <div class="col-dso">Module</div>
             </div>

@@ -45,7 +45,13 @@ export function findFocusJ(stackFrames, off, end, focusPath) {
 
 function makeCtx() { return { nodeId: 0 }; }
 function newNode(ctx, fid) {
-  return { id: ++ctx.nodeId, fid, total: 0, self: 0, totalCount: 0, selfCount: 0, children: new Map() };
+  return {
+    id: ++ctx.nodeId, fid,
+    total: 0, self: 0,
+    totalCount: 0, selfCount: 0,
+    totalLive: 0, selfLive: 0,
+    children: new Map(),
+  };
 }
 
 // node.total / node.self semantics:
@@ -60,8 +66,17 @@ function newNode(ctx, fid) {
 // render "5 GB · 1.2k allocations" and the user can tell a single big
 // allocation apart from many small ones. Stays 0 on profiles without an
 // alloc-count column.
+//
+// node.totalLive / node.selfLive: bytes still allocated at end of capture
+// (== bytes-leaked column). Accumulated in parallel regardless of the active
+// metric, so the "Live" column always shows the persistent footprint
+// next to Total — same data Instruments calls "Persistent". Transient
+// = Total − Live, so we don't store it separately.
 function countWeightsOf(profile) {
   return profile.samples._byKind ? (profile.samples._byKind["alloc-count"] || null) : null;
+}
+function liveWeightsOf(profile) {
+  return profile.samples._byKind ? (profile.samples._byKind["bytes-leaked"] || null) : null;
 }
 
 export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnknown = false, focusPath = [] } = {}) {
@@ -69,6 +84,7 @@ export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnkno
   const root = newNode(ctx, -1);
   const { stackOffsets, stackFrames, weights } = profile.samples;
   const counts = countWeightsOf(profile);
+  const lives  = liveWeightsOf(profile);
   const hasFocus = focusPath.length > 0;
   for (const i of sampleIdxs) {
     const sampleOff = stackOffsets[i];
@@ -85,11 +101,13 @@ export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnkno
       off = sampleOff;
       end = focusedJ + 1;
     }
-    const w = weights ? weights[i] : 1;
-    const cw = counts ? counts[i] : 0;
+    const w  = weights ? weights[i] : 1;
+    const cw = counts  ? counts[i]  : 0;
+    const lw = lives   ? lives[i]   : 0;
     let cur = root;
     root.total += w;
     root.totalCount += cw;
+    root.totalLive  += lw;
     // walk frames in display order:
     //   inverted=false (top-down): outermost..innermost  =>  end-1 .. off
     //   inverted=true  (bottom-up): innermost..outermost =>  off   .. end-1
@@ -107,6 +125,7 @@ export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnkno
       }
       child.total += w;
       child.totalCount += cw;
+      child.totalLive  += lw;
       cur = child;
       if (!firstChild) firstChild = child;
       lastChild = child;
@@ -118,6 +137,7 @@ export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnkno
     if (leafNode) {
       leafNode.self += w;
       leafNode.selfCount += cw;
+      leafNode.selfLive  += lw;
     }
   }
   if (inverted) attachTruncation(ctx, root, TRUNCATION_THRESHOLD, focusPath);
@@ -164,8 +184,11 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
   const totals = new Float64Array(F);
   const selfs = new Float64Array(F);
   const counts = countWeightsOf(profile);
+  const lives  = liveWeightsOf(profile);
   const totalCounts = counts ? new Float64Array(F) : null;
   const selfCounts  = counts ? new Float64Array(F) : null;
+  const totalLives  = lives  ? new Float64Array(F) : null;
+  const selfLives   = lives  ? new Float64Array(F) : null;
   const seenStamp = new Int32Array(F);
   let stamp = 0;
   const { stackOffsets, stackFrames, weights } = profile.samples;
@@ -176,6 +199,7 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
   const matching = hasFocus ? [] : sampleIdxs;
   let rootTotal = 0;
   let rootCount = 0;
+  let rootLive  = 0;
   for (const i of sampleIdxs) {
     stamp++;
     const off = stackOffsets[i];
@@ -187,15 +211,18 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
       end = focusedJ + 1;
       matching.push(i);
     }
-    const w = weights ? weights[i] : 1;
-    const cw = counts ? counts[i] : 0;
+    const w  = weights ? weights[i] : 1;
+    const cw = counts  ? counts[i]  : 0;
+    const lw = lives   ? lives[i]   : 0;
     rootTotal += w;
     rootCount += cw;
+    rootLive  += lw;
     if (end > off) {
       const leaf = stackFrames[off];
       if (!(hideUnknown && profile.isUnknown(leaf))) {
         selfs[leaf] += w;
         if (selfCounts) selfCounts[leaf] += cw;
+        if (selfLives)  selfLives[leaf]  += lw;
       }
     }
     for (let j = off; j < end; j++) {
@@ -205,11 +232,13 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
       seenStamp[fid] = stamp;
       totals[fid] += w;
       if (totalCounts) totalCounts[fid] += cw;
+      if (totalLives)  totalLives[fid]  += lw;
     }
   }
   const root = newNode(ctx, -1);
   root.total = rootTotal;
   root.totalCount = rootCount;
+  root.totalLive  = rootLive;
   for (let fid = 0; fid < F; fid++) {
     if (totals[fid] === 0) continue;
     const node = newNode(ctx, fid);
@@ -218,6 +247,10 @@ export function buildTopFunctions(profile, { sampleIdxs, hideUnknown = false, fo
     if (totalCounts) {
       node.totalCount = totalCounts[fid];
       node.selfCount = selfCounts[fid];
+    }
+    if (totalLives) {
+      node.totalLive = totalLives[fid];
+      node.selfLive  = selfLives[fid];
     }
     // Mark as lazy: children built on demand via expandTopFunction().
     node._lazy = true;
@@ -303,6 +336,7 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
   const ctx = node._ctx;
   const { stackOffsets, stackFrames, weights } = profile.samples;
   const counts = countWeightsOf(profile);
+  const lives  = liveWeightsOf(profile);
   const fid = node._lazyFid;
   const hasFocus = focusPath.length > 0;
   for (const i of node._lazySamples) {
@@ -330,8 +364,9 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
       }
     }
     if (k < 0) continue;
-    const w = weights ? weights[i] : 1;
-    const cw = counts ? counts[i] : 0;
+    const w  = weights ? weights[i] : 1;
+    const cw = counts  ? counts[i]  : 0;
+    const lw = lives   ? lives[i]   : 0;
     let cur = node;
     let lastChild = null;
     if (inverted) {
@@ -346,6 +381,7 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
         }
         child.total += w;
         child.totalCount += cw;
+        child.totalLive  += lw;
         cur = child;
         lastChild = child;
       }
@@ -364,12 +400,14 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
         }
         child.total += w;
         child.totalCount += cw;
+        child.totalLive  += lw;
         cur = child;
         lastChild = child;
       }
       if (lastChild) {
         lastChild.self += w;
         lastChild.selfCount += cw;
+        lastChild.selfLive  += lw;
       }
       // If fid was the innermost frame (k === off), node.self was already
       // counted in buildTopFunctions — don't double-count.
@@ -379,8 +417,13 @@ export function expandTopFunction(profile, node, { hideUnknown = false, focusPat
   node._ctx = null;
 }
 
-export function sortChildren(node) {
+// Default comparator: descending by total weight (bytes / samples), with self
+// as the tiebreaker so two siblings tied on cumulative weight surface the
+// one that does more leaf-attributable work first. View code can pass any
+// comparator (e.g. by node.totalLive) to reorder by a different column.
+export const DEFAULT_SORT = (a, b) => b.total - a.total || b.self - a.self;
+export function sortChildren(node, cmp = DEFAULT_SORT) {
   const arr = [...node.children.values()];
-  arr.sort((a, b) => b.total - a.total || b.self - a.self);
+  arr.sort(cmp);
   return arr;
 }
