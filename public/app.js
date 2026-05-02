@@ -2,8 +2,8 @@ import { Profile, fmtMs, fmtTimeShort } from "./profile.js";
 import { Timeline } from "./timeline.js";
 import { TreeView } from "./treeview.js";
 import { SamplesView } from "./samplesview.js";
-import { Marks, PALETTE as MARK_PALETTE } from "./marks.js";
-import { filterSampleIndices, computeMarkStats } from "./analysis.js";
+import { Scopes, PALETTE as SCOPE_PALETTE } from "./scopes.js";
+import { filterSampleIndices, computeScopeStats } from "./analysis.js";
 
 const $ = (s) => document.querySelector(s);
 
@@ -40,10 +40,10 @@ const els = {
   treeHeaderTree: $("#tree-header-tree"),
   treeHeaderSamples: $("#tree-header-samples"),
   sampleSidebar: $("#sample-sidebar"),
-  marksSidebar: $("#marks-sidebar"),
-  marksResizer: $("#marks-resizer"),
-  marksList: $("#marks-list"),
-  hideMarked: $("#hide-marked"),
+  scopesSidebar: $("#scopes-sidebar"),
+  scopesResizer: $("#scopes-resizer"),
+  scopesList: $("#scopes-list"),
+  hideScoped: $("#hide-scoped"),
   focusBreadcrumbs: $("#focus-breadcrumbs"),
 };
 
@@ -51,7 +51,7 @@ let profile = null;
 let timeline = null;
 let treeView = null;
 let samplesView = null;
-let marks = null;
+let scopes = null;
 let mode = "top";
 
 function activeView() {
@@ -87,20 +87,20 @@ function setProfile(json, name) {
   const freq = profile.meta.sampleFreq ? ` @ ${profile.meta.sampleFreq} Hz` : "";
   els.fileInfo.innerHTML = `<b>${escapeHtml(name)}</b> · ${profile.sampleCount.toLocaleString()} samples${onCpu} · ${fmtMs(profile.durationNs)} elapsed · ${profile.threads.length} threads${ev}${freq}`;
 
-  marks = new Marks(profile);
-  marks.onChange = onMarksChanged;
+  scopes = new Scopes(profile);
+  scopes.onChange = onScopesChanged;
 
-  const getHideMarked = () => els.hideMarked.checked;
+  const getHideScoped = () => els.hideScoped.checked;
 
   timeline = new Timeline({
     profile,
-    marks,
+    scopes,
     laneLabelsEl: els.laneLabels,
     lanesCanvas: els.lanesCanvas,
     rulerCanvas: els.rulerCanvas,
     highlightCanvas: els.highlightCanvas,
     overlayEl: els.selectionOverlay,
-    getHideMarked,
+    getHideScoped,
     onChange: () => activeView() && activeView().refresh(),
     onViewChange: (isFull) => els.resetZoom.classList.toggle("hidden", isFull),
   });
@@ -113,27 +113,27 @@ function setProfile(json, name) {
 
   treeView = new TreeView({
     profile,
-    marks,
+    scopes,
     scrollEl: els.treeScroll,
     treeEl: els.tree,
     statsEl: els.stats,
     getMode: () => mode,
     getFilter,
     getHideUnknown: () => els.hideUnknown.checked,
-    getHideMarked,
+    getHideScoped,
     getSearch: () => els.search.value,
     getAutoExpand: () => els.autoExpand.checked,
     getTopInverted: () => els.topInverted.checked,
   });
   samplesView = new SamplesView({
     profile,
-    marks,
+    scopes,
     scrollEl: els.treeScroll,
     treeEl: els.tree,
     statsEl: els.stats,
     sidebarEl: els.sampleSidebar,
     getFilter,
-    getHideMarked,
+    getHideScoped,
     getFocusPath: () => (treeView ? treeView._focusPath : []),
   });
   // onFocusChange fires at the end of every TreeView.refresh(), so it's a
@@ -141,7 +141,7 @@ function setProfile(json, name) {
   // view scope (filter window, focus path, hideUnknown).
   treeView.onFocusChange = (crumbs) => {
     renderFocusBreadcrumbs(crumbs);
-    renderMarksSidebar();
+    renderScopesSidebar();
   };
   treeView.onHoverChange = (ctx) => timeline && timeline.setHoverChain(ctx);
   treeView.onMatchesChange = (cur, total) => {
@@ -162,37 +162,37 @@ function setProfile(json, name) {
   };
   applyModeUI();
   activeView().refresh();
-  renderMarksSidebar();
+  renderScopesSidebar();
 }
 
-function onMarksChanged() {
-  renderMarksSidebar();
-  if (timeline) timeline.marksChanged();
-  // In "hide marked samples" mode the inRange composition depends on which
-  // marks are active, so a mark change requires a full refresh — not just
+function onScopesChanged() {
+  renderScopesSidebar();
+  if (timeline) timeline.scopesChanged();
+  // In "hide scoped samples" mode the inRange composition depends on which
+  // scopes are active, so a scope change requires a full refresh — not just
   // a row re-render — to rebuild the tree. Otherwise the tree-row dots are
   // the only thing that changed and rerenderRows is enough.
-  if (els.hideMarked.checked && activeView()) {
+  if (els.hideScoped.checked && activeView()) {
     activeView().refresh();
   } else if (treeView) {
     treeView.rerenderRows();
   }
 }
 
-function renderMarksSidebar() {
-  const list = marks ? marks.list() : [];
+function renderScopesSidebar() {
+  const list = scopes ? scopes.list() : [];
   // Sidebar is meaningful only in tree modes; samples mode owns the right-hand
-  // slot for its own sidebar. Hidden when there's nothing marked yet.
+  // slot for its own sidebar. Hidden when there are no scopes yet.
   const visible = list.length > 0 && mode !== "samples";
-  els.marksSidebar.classList.toggle("hidden", !visible);
+  els.scopesSidebar.classList.toggle("hidden", !visible);
   if (!visible) {
     closeColorPopover();
-    els.marksList.innerHTML = "";
+    els.scopesList.innerHTML = "";
     return;
   }
-  // Inclusive/self percentages over the same scope the Top tab uses: current
+  // Inclusive/self percentages over the same view the Top tab uses: current
   // timeline selection × thread filter × focus path × hide-unknown. Stats
-  // are recomputed on every refresh, but with ~10 marks and a single linear
+  // are recomputed on every refresh, but with ~10 scopes and a single linear
   // pass this is cheap.
   const filter = timeline
     ? { startNs: timeline.selStartNs, endNs: timeline.selEndNs, tids: timeline.selectedTids }
@@ -200,14 +200,14 @@ function renderMarksSidebar() {
   const sampleIdxs = filterSampleIndices(profile, filter);
   const focusPath = treeView ? treeView._focusPath : [];
   const hideUnknown = els.hideUnknown.checked;
-  const stats = computeMarkStats(profile, list.map((m) => m.fid), { sampleIdxs, hideUnknown, focusPath });
+  const stats = computeScopeStats(profile, list.map((m) => m.fid), { sampleIdxs, hideUnknown, focusPath });
 
   const nsPer = profile.timeKnown ? profile.nsPerSample : 0;
   let html = "";
   for (const m of list) {
     const label = profile.funcLabel(m.fid);
     const dso = profile.funcDsoShort(m.fid);
-    const cls = m.active ? "mark-item" : "mark-item inactive";
+    const cls = m.active ? "scope-item" : "scope-item inactive";
     const titleHint = m.active ? "Click to hide from timeline" : "Click to show in timeline";
     const s = stats.perFid.get(m.fid) || { total: 0, self: 0 };
     const totalPct = stats.denom ? (100 * s.total / stats.denom) : 0;
@@ -216,20 +216,20 @@ function renderMarksSidebar() {
     const statsTip = `${totalPct.toFixed(2)}% inclusive · ${selfPct.toFixed(2)}% self · ${s.total.toLocaleString()} of ${stats.denom.toLocaleString()} samples${nsPer ? ` · ≈${fmtTimeShort(s.total * nsPer)} inclusive` : ""}`;
     html += `
       <div class="${cls}" data-fid="${m.fid}" title="${titleHint}">
-        <button class="mark-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
-        <div class="mark-text">
-          <div class="mark-sym" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
-          <div class="mark-dso" title="${escapeHtml(dso)}">${escapeHtml(dso)}</div>
+        <button class="scope-swatch" data-swatch="1" style="background:${m.color}" title="Change color"></button>
+        <div class="scope-text">
+          <div class="scope-sym" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+          <div class="scope-dso" title="${escapeHtml(dso)}">${escapeHtml(dso)}</div>
         </div>
-        <div class="mark-stats" title="${statsTip}">
-          <div class="mark-total-pct">${totalPct.toFixed(1)}%</div>
-          <div class="mark-self-pct">${timeTxt}</div>
+        <div class="scope-stats" title="${statsTip}">
+          <div class="scope-total-pct">${totalPct.toFixed(1)}%</div>
+          <div class="scope-self-pct">${timeTxt}</div>
         </div>
-        <button class="mark-del" data-del="1" title="Remove mark">×</button>
+        <button class="scope-del" data-del="1" title="Remove scope">×</button>
       </div>`;
   }
-  els.marksList.innerHTML = html;
-  for (const item of els.marksList.children) {
+  els.scopesList.innerHTML = html;
+  for (const item of els.scopesList.children) {
     const fid = +item.dataset.fid;
     item.querySelector("[data-swatch]").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -237,14 +237,14 @@ function renderMarksSidebar() {
     });
     item.querySelector("[data-del]").addEventListener("click", (e) => {
       e.stopPropagation();
-      marks.remove(fid);
+      scopes.remove(fid);
     });
     // Click on the row body (not the swatch or × button) toggles whether
-    // this mark contributes to timeline lane coloring. The mark stays in
+    // this scope contributes to timeline lane coloring. The scope stays in
     // the sidebar either way.
-    item.addEventListener("click", () => marks.toggleActive(fid));
-    // Hovering a mark in the sidebar highlights every sample whose stack
-    // contains the marked function — same yellow overlay used by tree-row
+    item.addEventListener("click", () => scopes.toggleActive(fid));
+    // Hovering a scope in the sidebar highlights every sample whose stack
+    // contains the scope's function — same yellow overlay used by tree-row
     // hover. Cancel the tree's pending debounced clear first, otherwise its
     // mouseleave-scheduled null would arrive 75ms later and wipe us out.
     item.addEventListener("mouseenter", () => {
@@ -261,14 +261,14 @@ function renderMarksSidebar() {
 let colorPopoverEl = null;
 function openColorPopover(fid, anchorEl) {
   closeColorPopover();
-  const cur = marks.get(fid);
+  const cur = scopes.get(fid);
   if (!cur) return;
   const pop = document.createElement("div");
   pop.className = "color-popover";
   let html = "";
-  for (let i = 0; i < MARK_PALETTE.length; i++) {
+  for (let i = 0; i < SCOPE_PALETTE.length; i++) {
     const sel = i === cur.paletteIdx ? " selected" : "";
-    html += `<button class="color-cell${sel}" data-idx="${i}" style="background:${MARK_PALETTE[i]}" title="${MARK_PALETTE[i]}"></button>`;
+    html += `<button class="color-cell${sel}" data-idx="${i}" style="background:${SCOPE_PALETTE[i]}" title="${SCOPE_PALETTE[i]}"></button>`;
   }
   pop.innerHTML = html;
   document.body.appendChild(pop);
@@ -285,7 +285,7 @@ function openColorPopover(fid, anchorEl) {
   for (const cell of pop.children) {
     cell.addEventListener("click", (e) => {
       e.stopPropagation();
-      marks.setColor(fid, +cell.dataset.idx);
+      scopes.setColor(fid, +cell.dataset.idx);
       closeColorPopover();
     });
   }
@@ -350,9 +350,9 @@ function applyModeUI() {
   els.tree.innerHTML = "";
   els.tree.style.height = "0px";
   els.treeScroll.scrollTop = 0;
-  // Marks sidebar shares the right-hand slot with the samples sidebar; only
-  // one is shown at a time, and it stays hidden when there are no marks yet.
-  renderMarksSidebar();
+  // Scopes sidebar shares the right-hand slot with the samples sidebar; only
+  // one is shown at a time, and it stays hidden when there are no scopes yet.
+  renderScopesSidebar();
 }
 
 function showLoading(text) {
@@ -376,7 +376,7 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 
 els.hideUnknown.addEventListener("change", () => treeView && treeView.refresh());
-els.hideMarked.addEventListener("change", () => {
+els.hideScoped.addEventListener("change", () => {
   if (timeline) timeline.draw();
   if (activeView()) activeView().refresh();
 });
@@ -435,10 +435,10 @@ window.addEventListener("keydown", (e) => {
     case "f": case "F":
       if (mode !== "samples") { e.preventDefault(); treeView.focusSelected(); }
       break;
-    case "m": case "M":
-      if (mode !== "samples" && marks) {
+    case "s": case "S":
+      if (mode !== "samples" && scopes) {
         const fid = treeView.selectedFid();
-        if (fid != null) { e.preventDefault(); marks.toggle(fid); }
+        if (fid != null) { e.preventDefault(); scopes.toggle(fid); }
       }
       break;
     case "0":          if (timeline) { e.preventDefault(); timeline.resetView(); } break;
@@ -527,21 +527,21 @@ async function uploadAndLoad(file) {
   window.addEventListener("mouseup", () => { drag = null; });
 }
 
-// ----- Marks sidebar resizer -----
-// Dragging the left edge widens / narrows the marks sidebar. Width is held
+// ----- Scopes sidebar resizer -----
+// Dragging the left edge widens / narrows the scopes sidebar. Width is held
 // inline so it persists for the session even if the sidebar is hidden and
-// reshown (e.g. all marks removed, then a new one added).
+// reshown (e.g. all scopes removed, then a new one added).
 {
   let drag = null;
-  els.marksResizer.addEventListener("mousedown", (e) => {
-    drag = { startX: e.clientX, startW: els.marksSidebar.getBoundingClientRect().width };
+  els.scopesResizer.addEventListener("mousedown", (e) => {
+    drag = { startX: e.clientX, startW: els.scopesSidebar.getBoundingClientRect().width };
     e.preventDefault();
   });
   window.addEventListener("mousemove", (e) => {
     if (!drag) return;
     const dx = drag.startX - e.clientX; // dragging left = wider
     const w = Math.max(220, Math.min(800, drag.startW + dx));
-    els.marksSidebar.style.flex = `0 0 ${w}px`;
+    els.scopesSidebar.style.flex = `0 0 ${w}px`;
   });
   window.addEventListener("mouseup", () => { drag = null; });
 }

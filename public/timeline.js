@@ -3,21 +3,21 @@
 // Wheel pans, Ctrl/Cmd+wheel zooms around the cursor.
 
 import { fmtMs } from "./profile.js";
-import { PALETTE as MARK_PALETTE } from "./marks.js";
+import { PALETTE as SCOPE_PALETTE } from "./scopes.js";
 
 const LANE_H = 26;
 const MIN_VIEW_NS = 1000; // 1 µs floor on zoom
 
 export class Timeline {
-  constructor({ profile, marks, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, getHideMarked, onChange, onViewChange }) {
+  constructor({ profile, scopes, laneLabelsEl, lanesCanvas, rulerCanvas, highlightCanvas, overlayEl, getHideScoped, onChange, onViewChange }) {
     this.profile = profile;
-    this.marks = marks || null;
+    this.scopes = scopes || null;
     this.laneLabelsEl = laneLabelsEl;
     this.lanesCanvas = lanesCanvas;
     this.rulerCanvas = rulerCanvas;
     this.highlightCanvas = highlightCanvas || null;
     this.overlayEl = overlayEl;
-    this.getHideMarked = getHideMarked || (() => false);
+    this.getHideScoped = getHideScoped || (() => false);
     this.onChange = onChange;
     this.onViewChange = onViewChange;
     // Hover context from the tree, or null.
@@ -138,9 +138,9 @@ export class Timeline {
     if (this.onViewChange) this.onViewChange(this.isFullView());
   }
 
-  // Called whenever the mark set changes. Lane bars are colored from the
-  // per-sample mark map, so we have to redraw the lanes (not just overlays).
-  marksChanged() {
+  // Called whenever the scope set changes. Lane bars are colored from the
+  // per-sample scope map, so we have to redraw the lanes (not just overlays).
+  scopesChanged() {
     this.draw();
   }
 
@@ -174,11 +174,11 @@ export class Timeline {
     const { times, tids, stackOffsets, stackFrames } = this.profile.samples;
     const lo = lowerBound(times, this.viewStartNs);
     const hi = upperBound(times, this.viewEndNs);
-    // Match _drawLanes: when "hide marked" is on, the lanes are painted
-    // without marked samples, so the hover overlay must also exclude them
+    // Match _drawLanes: when "hide scoped" is on, the lanes are painted
+    // without in-scope samples, so the hover overlay must also exclude them
     // (otherwise the yellow could hover over empty lane space).
-    const hideMarked = this.getHideMarked();
-    const sampleColor = (hideMarked && this.marks) ? this.marks.sampleColorIdx() : null;
+    const hideScoped = this.getHideScoped();
+    const sampleColor = (hideScoped && this.scopes) ? this.scopes.sampleColorIdx() : null;
     for (let i = lo; i < hi; i++) {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
@@ -294,15 +294,15 @@ export class Timeline {
       ctx.fillRect(0, y + LANE_H - 1, w, 1);
     }
 
-    // Bucket visible samples per-lane per-pixel per-color. C = unmarked + N
-    // palette colors; if there are no marks (or no Marks instance), C is 1
+    // Bucket visible samples per-lane per-pixel per-color. C = out-of-scope + N
+    // palette colors; if there are no scopes (or no Scopes instance), C is 1
     // and we degenerate to the original single-color path.
-    const sampleColor = this.marks ? this.marks.sampleColorIdx() : null;
-    const C = (this.marks && this.marks.size() > 0) ? MARK_PALETTE.length + 1 : 1;
-    // "Hide marked samples" mode subtracts the marked-stack samples from the
-    // lanes so what's left is the unaccounted-for time. Inactive marks
+    const sampleColor = this.scopes ? this.scopes.sampleColorIdx() : null;
+    const C = (this.scopes && this.scopes.size() > 0) ? SCOPE_PALETTE.length + 1 : 1;
+    // "Hide scoped samples" mode subtracts the in-scope samples from the
+    // lanes so what's left is the unaccounted-for time. Inactive scopes
     // already contribute 0 to sampleColorIdx, so they don't subtract.
-    const hideMarked = this.getHideMarked();
+    const hideScoped = this.getHideScoped();
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
     const tidToIdx = new Map();
@@ -316,7 +316,7 @@ export class Timeline {
       const li = tidToIdx.get(tids[i]);
       if (li === undefined) continue;
       const c = (C > 1 && sampleColor) ? sampleColor[i] : 0;
-      if (hideMarked && c !== 0) continue;
+      if (hideScoped && c !== 0) continue;
       const px = Math.min(W - 1, Math.floor((times[i] - this.viewStartNs) / span * W));
       buckets[(li * W + px) * C + c]++;
     }
@@ -342,22 +342,22 @@ export class Timeline {
         if (total === 0) continue;
         const v = Math.min(1, total / maxPerPixel);
         const bh = Math.max(1, v * barH);
-        // Stack from the bottom up: mark colors anchor at the lane floor
-        // (so they read as the "narrative paint"), with unmarked lane color
+        // Stack from the bottom up: scope colors anchor at the lane floor
+        // (so they read as the "narrative paint"), with out-of-scope lane color
         // layered above.
         let stackBottom = baseY + barH;
         for (let c = 1; c < C; c++) {
           const n = buckets[rowOff + px * C + c];
           if (n === 0) continue;
           const sh = (n / total) * bh;
-          ctx.fillStyle = MARK_PALETTE[c - 1];
+          ctx.fillStyle = SCOPE_PALETTE[c - 1];
           ctx.globalAlpha = 1;
           ctx.fillRect(px, stackBottom - sh, 1, sh);
           stackBottom -= sh;
         }
-        const nUnmarked = buckets[rowOff + px * C + 0];
-        if (nUnmarked > 0) {
-          const sh = (nUnmarked / total) * bh;
+        const nUnscoped = buckets[rowOff + px * C + 0];
+        if (nUnscoped > 0) {
+          const sh = (nUnscoped / total) * bh;
           ctx.fillStyle = lane.color;
           ctx.globalAlpha = 0.85;
           ctx.fillRect(px, stackBottom - sh, 1, sh);
@@ -617,10 +617,10 @@ function upperBound(arr, v) {
 }
 
 // Every lane is painted in the accent blue. Per-thread coloring used to be
-// the only signal a row carried, but marks now own that semantic — assigning
-// arbitrary colors to threads would compete with mark colors for attention,
-// and would also collide with whichever lane happened to draw the mark blue.
-// Yellow (#ffd24e) is owned by the hover highlight; mark colors avoid both.
+// the only signal a row carried, but scopes now own that semantic — assigning
+// arbitrary colors to threads would compete with scope colors for attention,
+// and would also collide with whichever lane happened to draw the scope blue.
+// Yellow (#ffd24e) is owned by the hover highlight; scope colors avoid both.
 function laneColor(_i) {
   return "#4ea1ff";
 }

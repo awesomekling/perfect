@@ -366,8 +366,8 @@ button { font: inherit; color: inherit; }
 }
 .tree { position: relative; }
 
-/* ---------- Marks sidebar ---------- */
-.marks-sidebar {
+/* ---------- Scopes sidebar ---------- */
+.scopes-sidebar {
   flex: 0 0 360px;
   border-left: 1px solid var(--border);
   background: var(--bg-panel);
@@ -376,7 +376,7 @@ button { font: inherit; color: inherit; }
   flex-direction: column;
   position: relative;
 }
-.marks-sidebar.hidden { display: none; }
+.scopes-sidebar.hidden { display: none; }
 .sidebar-resizer {
   position: absolute;
   top: 0; bottom: 0; left: 0;
@@ -385,19 +385,19 @@ button { font: inherit; color: inherit; }
   z-index: 5;
 }
 .sidebar-resizer:hover { background: var(--accent); opacity: 0.5; }
-.marks-sidebar .sidebar-header {
+.scopes-sidebar .sidebar-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: #2e2e35;
   flex: 0 0 auto;
 }
-.marks-sidebar .sidebar-sub {
+.scopes-sidebar .sidebar-sub {
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 2px;
 }
-.marks-sidebar .sidebar-opt { margin-top: 6px; }
-.marks-sidebar .sidebar-sub kbd {
+.scopes-sidebar .sidebar-opt { margin-top: 6px; }
+.scopes-sidebar .sidebar-sub kbd {
   display: inline-block;
   background: #1a1a1e;
   border: 1px solid var(--border);
@@ -408,12 +408,12 @@ button { font: inherit; color: inherit; }
   font-size: 10px;
   color: var(--text);
 }
-.marks-list {
+.scopes-list {
   flex: 1;
   overflow: auto;
   padding: 4px 0;
 }
-.mark-item {
+.scope-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -421,10 +421,10 @@ button { font: inherit; color: inherit; }
   border-bottom: 1px solid #2c2c33;
   cursor: pointer;
 }
-.mark-item:hover { background: var(--bg-row-hover); }
-.mark-item.inactive .mark-swatch,
-.mark-item.inactive .mark-text { opacity: 0.4; }
-.mark-swatch {
+.scope-item:hover { background: var(--bg-row-hover); }
+.scope-item.inactive .scope-swatch,
+.scope-item.inactive .scope-text { opacity: 0.4; }
+.scope-swatch {
   width: 16px; height: 16px;
   border-radius: 3px;
   border: 1px solid rgba(0,0,0,0.4);
@@ -434,19 +434,19 @@ button { font: inherit; color: inherit; }
   outline: none;
   box-shadow: 0 0 0 1px rgba(255,255,255,0.05);
 }
-.mark-swatch:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
-.mark-text {
+.scope-swatch:hover { box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
+.scope-text {
   flex: 1;
   min-width: 0;
 }
-.mark-sym {
+.scope-sym {
   font: var(--text-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text);
 }
-.mark-dso {
+.scope-dso {
   font-size: 10px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -454,7 +454,7 @@ button { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   margin-top: 1px;
 }
-.mark-stats {
+.scope-stats {
   flex: 0 0 auto;
   text-align: right;
   font: var(--text-mono);
@@ -462,10 +462,10 @@ button { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
-.mark-stats .mark-total-pct { color: var(--text); }
-.mark-stats .mark-self-pct  { font-size: 10px; }
-.mark-item.inactive .mark-stats { opacity: 0.4; }
-.mark-del {
+.scope-stats .scope-total-pct { color: var(--text); }
+.scope-stats .scope-self-pct  { font-size: 10px; }
+.scope-item.inactive .scope-stats { opacity: 0.4; }
+.scope-del {
   background: transparent;
   border: none;
   color: var(--text-dim);
@@ -476,7 +476,7 @@ button { font: inherit; color: inherit; }
   border-radius: 3px;
   flex: 0 0 auto;
 }
-.mark-del:hover { background: #45454f; color: var(--text); }
+.scope-del:hover { background: #45454f; color: var(--text); }
 
 .color-popover {
   position: fixed;
@@ -622,7 +622,7 @@ button { font: inherit; color: inherit; }
   user-select: none;
 }
 .tree-row .twisty.expandable { cursor: pointer; color: var(--text); }
-.tree-row .mark-dot {
+.tree-row .scope-dot {
   display: inline-block;
   width: 9px;
   height: 9px;
@@ -631,11 +631,11 @@ button { font: inherit; color: inherit; }
   flex: 0 0 auto;
   box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
 }
-.tree-row.marked::before {
+.tree-row.scoped::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--mark-color, transparent);
+  background: var(--scope-color, transparent);
   opacity: 0.08;
   pointer-events: none;
   z-index: 0;

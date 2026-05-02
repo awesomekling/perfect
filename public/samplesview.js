@@ -7,16 +7,16 @@ import { fmtMs, fmtTimeShort } from "./profile.js";
 const ROW_H = 22;
 
 export class SamplesView {
-  constructor({ profile, marks, scrollEl, treeEl, statsEl, sidebarEl, getFilter, getFocusPath, getHideMarked }) {
+  constructor({ profile, scopes, scrollEl, treeEl, statsEl, sidebarEl, getFilter, getFocusPath, getHideScoped }) {
     this.profile = profile;
-    this.marks = marks || null;
+    this.scopes = scopes || null;
     this.scrollEl = scrollEl;
     this.treeEl = treeEl;
     this.statsEl = statsEl;
     this.sidebarEl = sidebarEl;
     this.getFilter = getFilter;
     this.getFocusPath = getFocusPath || (() => []);
-    this.getHideMarked = getHideMarked || (() => false);
+    this.getHideScoped = getHideScoped || (() => false);
     this.samples = [];       // sample indices (sorted by time, since profile.samples.times already is)
     this._selectedIdx = -1;
     this._onScroll = () => this._renderVisible();
@@ -43,8 +43,8 @@ export class SamplesView {
     const { times, tids: stids, stackOffsets, stackFrames } = this.profile.samples;
     const focusPath = this.getFocusPath();
     const K = focusPath.length;
-    const hideMarked = this.getHideMarked();
-    const sampleColor = (hideMarked && this.marks) ? this.marks.sampleColorIdx() : null;
+    const hideScoped = this.getHideScoped();
+    const sampleColor = (hideScoped && this.scopes) ? this.scopes.sampleColorIdx() : null;
     const rows = [];
     for (let i = 0; i < times.length; i++) {
       const t = times[i];
