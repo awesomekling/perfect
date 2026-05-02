@@ -98,7 +98,7 @@ async function listProfiles() {
 
 // Bump SCHEMA whenever the parsed-profile shape changes, so old caches are
 // ignored on the next request.
-const PARSED_SCHEMA = 5;
+const PARSED_SCHEMA = 6;
 function cacheKey(absPath, mtimeMs) {
   const h = crypto.createHash("sha256").update(absPath + ":" + mtimeMs + ":v" + PARSED_SCHEMA).digest("hex").slice(0, 16);
   return path.join(CACHE, `profile-${h}.json.gz`);
@@ -204,11 +204,13 @@ async function streamSerializeProfile(profile, gz) {
     await writeAndDrain("}");
   }
 
-  if (profile.rssSeries) {
-    await writeAndDrain(',"rssSeries":{');
+  for (const seriesField of ["rssSeries", "liveSeries"]) {
+    const series = profile[seriesField];
+    if (!series) continue;
+    await writeAndDrain(`,"${seriesField}":{`);
     let first = true;
     for (const [k, kind] of Object.entries(BIG_RSS_KINDS)) {
-      const v = profile.rssSeries[k];
+      const v = series[k];
       if (v == null) continue;
       if (!first) await writeAndDrain(",");
       first = false;

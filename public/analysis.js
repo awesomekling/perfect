@@ -45,7 +45,7 @@ export function findFocusJ(stackFrames, off, end, focusPath) {
 
 function makeCtx() { return { nodeId: 0 }; }
 function newNode(ctx, fid) {
-  return { id: ++ctx.nodeId, fid, total: 0, self: 0, children: new Map() };
+  return { id: ++ctx.nodeId, fid, total: 0, self: 0, totalCount: 0, selfCount: 0, children: new Map() };
 }
 
 // node.total / node.self semantics:
@@ -53,6 +53,16 @@ function newNode(ctx, fid) {
 //   - weighted profiles   (heaptrack):  sum of per-sample weights (e.g. bytes)
 // `weights` below is `profile.samples.weights || null`, hoisted out of the
 // hot loop so the unweighted path doesn't pay for a branch per sample.
+//
+// node.totalCount / node.selfCount: when the profile carries an `alloc-count`
+// weight column (heaptrack), each node also accumulates the underlying
+// allocation count alongside its bytes total. The view layer can then
+// render "5 GB · 1.2k allocations" and the user can tell a single big
+// allocation apart from many small ones. Stays 0 on profiles without an
+// alloc-count column.
+function countWeightsOf(profile) {
+  return profile.samples._byKind ? (profile.samples._byKind["alloc-count"] || null) : null;
+}
 
 export function buildCallTree(profile, { sampleIdxs, inverted = false, hideUnknown = false, focusPath = [] } = {}) {
   const ctx = makeCtx();

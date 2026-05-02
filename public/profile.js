@@ -96,11 +96,20 @@ export class Profile {
     this.weighted = Object.keys(weightsByKind).length > 0;
     this.onWeightKindChange = null; // (newKind) => void, set by app.js
     this.setActiveWeightKind(this.meta.weightKind || "samples");
-    // Optional process-RSS-over-time series, used as a timeline overlay.
+    // Optional time-series overlays for the timeline. Each series is a
+    // (times[], bytes[]) pair sampled at heaptrack's `c` tick rate
+    // (roughly every 10ms). They become extra timeline lanes rendered as
+    // filled area charts; perf profiles leave both null.
     this.rssSeries = json.rssSeries
       ? {
           times: decodeTypedArray(json.rssSeries.times, "Float64Array"),
           bytes: decodeTypedArray(json.rssSeries.bytes, "Float64Array"),
+        }
+      : null;
+    this.liveSeries = json.liveSeries
+      ? {
+          times: decodeTypedArray(json.liveSeries.times, "Float64Array"),
+          bytes: decodeTypedArray(json.liveSeries.bytes, "Float64Array"),
         }
       : null;
 

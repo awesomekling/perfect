@@ -210,6 +210,13 @@ function setProfile(json, name) {
     els.searchPrev.disabled = total === 0;
     els.searchNext.disabled = total === 0;
   };
+  // Heap profiles default to inverted: leaf-most allocators are the
+  // natural starting point for "where are bytes going" — for perf,
+  // top-of-stack hot functions are the starting point, hence the Top
+  // default that the rest of the UI was built around.
+  if (profile.weighted && mode !== "samples") {
+    setMode("inverted");
+  }
   applyModeUI();
   activeView().refresh();
   renderScopesSidebar();
@@ -417,11 +424,15 @@ function hideLoading() {
 }
 
 // ----- Mode tabs -----
+function setMode(newMode) {
+  mode = newMode;
+  for (const t of document.querySelectorAll(".tab")) {
+    t.classList.toggle("active", t.dataset.mode === newMode);
+  }
+}
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
-    for (const t of document.querySelectorAll(".tab")) t.classList.remove("active");
-    tab.classList.add("active");
-    mode = tab.dataset.mode;
+    setMode(tab.dataset.mode);
     if (!treeView) return;
     applyModeUI();
     activeView().refresh();

@@ -122,7 +122,13 @@ export class TreeView {
 
     // expand top-level nodes by default for call tree / inverted
     this.expanded = new Set();
-    if (mode === "calltree" || mode === "inverted") {
+    // Heap profiles open collapsed: in the inverted view the leaf-most
+    // allocators (kmalloc, operator new, etc.) are usually shared across
+    // every code path, so auto-expanding the hot path would walk down a
+    // common allocator chain instead of revealing where allocations
+    // diverge — i.e. the actually-interesting answer. Let the user expand
+    // wherever they want to dig.
+    if ((mode === "calltree" || mode === "inverted") && !this.profile.weighted) {
       // Auto-expand the hot path: walk dominant child while it captures
       // a clear majority of its parent's samples.
       let cur = root;

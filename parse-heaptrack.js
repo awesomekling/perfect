@@ -126,6 +126,14 @@ class HeaptrackParser {
     this.rssBytes = [];
     this.pageSize = 4096;
 
+    // Live-heap time series. Counts running (allocated - freed) bytes
+    // across ALL events (not just kept), sampled at every `c` clock
+    // advance. Bounded by the count of `c` lines (~20K for a 4-minute
+    // capture) so it stays small in memory.
+    this._currentLiveBytes = 0;
+    this.liveTimesNs = [];
+    this.liveBytes = [];
+
     this._allocSeen = 0;
     this._kept = 0;
 
@@ -194,6 +202,10 @@ class HeaptrackParser {
     if (type === 0x2b /* '+' */) {
       this._allocSeen++;
       const allocInfoId = parseHexFrom(line, 2);
+      const info = this.htAllocInfos[allocInfoId];
+      // Live-heap counter ticks on EVERY alloc (not just kept ones), so
+      // the live-bytes time series reflects the program's true heap shape.
+      if (info) this._currentLiveBytes += info.size;
       // Per-site running count, for FIFO leak pairing later.
       const siteIdx = (this.htAllocCounts[allocInfoId] || 0);
       this.htAllocCounts[allocInfoId] = siteIdx + 1;
@@ -201,7 +213,7 @@ class HeaptrackParser {
       // scaled by stride at finalize time so capture-wide byte totals are
       // preserved on average.
       const isKept = (this._allocSeen % this.stride === 0)
-                     && this.htAllocInfos[allocInfoId] != null;
+                     && info != null;
       if (isKept) {
         this.keptTimeMs.push(this.currentTimeMs);
         this.keptAllocInfoId.push(allocInfoId);
@@ -228,6 +240,8 @@ class HeaptrackParser {
     // nonzero bytes-temporary weight for it.
     if (type === 0x2d /* '-' */) {
       const allocInfoId = parseHexFrom(line, 2);
+      const info = this.htAllocInfos[allocInfoId];
+      if (info) this._currentLiveBytes -= info.size;
       this.htFreeCounts[allocInfoId] = (this.htFreeCounts[allocInfoId] || 0) + 1;
       if (allocInfoId !== 0 && allocInfoId === this._lastAllocInfoSeen) {
         this.htTemporaryCounts[allocInfoId] = (this.htTemporaryCounts[allocInfoId] || 0) + 1;
@@ -245,6 +259,11 @@ class HeaptrackParser {
       this.currentTimeMs = parseHexFrom(line, 2);
       if (this.firstTimeMs === null) this.firstTimeMs = this.currentTimeMs;
       this.lastTimeMs = this.currentTimeMs;
+      // Sample the live-heap series at this clock tick. Heaptrack emits
+      // `c` lines roughly every 10ms (~85/sec) so this stays a reasonable
+      // resolution for a timeline overlay without exploding in size.
+      this.liveTimesNs.push(this.currentTimeMs * 1_000_000);
+      this.liveBytes.push(this._currentLiveBytes);
       return;
     }
 
@@ -496,11 +515,18 @@ class HeaptrackParser {
           "alloc-count":     wCount,
         },
       },
-      // Process RSS over time, sampled by heaptrack every ~10ms. Drives the
-      // memory-usage line overlaid on the timeline lanes.
+      // Process-RSS-over-time series, sampled by heaptrack every ~10ms.
+      // Drives the RSS line overlaid on the timeline lanes.
       rssSeries: {
         times: this.rssTimesNs,
         bytes: this.rssBytes,
+      },
+      // Live-heap-bytes-over-time series: running (allocated - freed)
+      // across every event, sampled at every `c` tick. Drives the live-
+      // heap timeline lane.
+      liveSeries: {
+        times: this.liveTimesNs,
+        bytes: this.liveBytes,
       },
     };
   }

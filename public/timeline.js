@@ -2,7 +2,7 @@
 // Click+drag on the canvas to select a time range.
 // Wheel pans, Ctrl/Cmd+wheel zooms around the cursor.
 
-import { fmtMs } from "./profile.js";
+import { fmtMs, fmtBytesShort } from "./profile.js";
 import { PALETTE as SCOPE_PALETTE } from "./scopes.js";
 
 const LANE_H = 26;
@@ -38,28 +38,60 @@ export class Timeline {
     // tids selection (null = all)
     this.selectedTids = null;
 
-    // Build lane list: one row per thread, sorted by sample count desc.
-    this.lanes = profile.threads
+    // Sample-density lanes: one row per thread, sorted by sample count desc.
+    // Each lane carries a `tid` so click/shift-click filters samples on that
+    // thread; the renderer buckets profile.samples per (lane, pixel-column).
+    const sampleLanes = profile.threads
       .map((t) => ({
+        kind: "samples",
         tid: t.tid,
         label: `${t.primaryComm}`,
         sublabel: `tid ${t.tid}`,
         sampleCount: 0,
       }));
-    // count samples per tid
     const counts = new Map();
     for (let i = 0; i < profile.sampleCount; i++) {
       const tid = profile.samples.tids[i];
       counts.set(tid, (counts.get(tid) || 0) + 1);
     }
-    for (const ln of this.lanes) ln.sampleCount = counts.get(ln.tid) || 0;
-    this.lanes.sort((a, b) => b.sampleCount - a.sampleCount);
+    for (const ln of sampleLanes) ln.sampleCount = counts.get(ln.tid) || 0;
+    sampleLanes.sort((a, b) => b.sampleCount - a.sampleCount);
 
-    // assign colors
+    // Series lanes: a precomputed (times, bytes) curve rendered as a
+    // filled area chart in the lane area. No tid attached — they're not
+    // per-thread, just per-profile, and don't participate in tid filtering.
+    // Heaptrack profiles contribute up to two: live-heap (running
+    // alloc-minus-free) and RSS (process resident-set, sampled by
+    // heaptrack every ~10ms). Either may be absent.
+    const seriesLanes = [];
+    if (profile.liveSeries) {
+      seriesLanes.push(makeSeriesLane({
+        label: "Live heap",
+        sublabel: "allocated − freed",
+        series: profile.liveSeries,
+        color: "#22c55e",
+      }));
+    }
+    if (profile.rssSeries) {
+      seriesLanes.push(makeSeriesLane({
+        label: "RSS",
+        sublabel: "process resident",
+        series: profile.rssSeries,
+        color: "#f59e0b",
+      }));
+    }
+
+    // Series lanes lead, then sample lanes — for heap profiles the heap
+    // shape is the orientation cue, for perf profiles there are no series
+    // lanes and the order is unchanged.
+    this.lanes = [...seriesLanes, ...sampleLanes];
+
     this.laneByTid = new Map();
     this.lanes.forEach((l, i) => {
-      l.color = laneColor(i);
-      this.laneByTid.set(l.tid, l);
+      // Sample lanes get auto-assigned colors from laneColor; series lanes
+      // already declared their own.
+      if (l.kind === "samples") l.color = laneColor(i);
+      if (l.tid != null) this.laneByTid.set(l.tid, l);
     });
 
     this._buildLabels();
@@ -71,30 +103,40 @@ export class Timeline {
     this.laneLabelsEl.innerHTML = "";
     for (const lane of this.lanes) {
       const row = document.createElement("div");
-      row.className = "lane-row";
-      row.dataset.tid = lane.tid;
+      row.className = "lane-row" + (lane.kind === "series" ? " lane-series" : "");
+      if (lane.tid != null) row.dataset.tid = lane.tid;
+      const meta = lane.kind === "series"
+        ? fmtBytesShort(lane.peak)
+        : (lane.sampleCount || 0).toLocaleString();
+      const titleAttr = lane.kind === "series"
+        ? `${lane.label} · ${lane.sublabel} · peak ${fmtBytesShort(lane.peak)}`
+        : `${lane.label} (tid ${lane.tid}, ${lane.sampleCount} samples)`;
       row.innerHTML = `
         <span class="swatch" style="background:${lane.color}"></span>
-        <span class="label" title="${lane.label} (tid ${lane.tid}, ${lane.sampleCount} samples)">${lane.label}</span>
-        <span class="meta">${lane.sampleCount}</span>
+        <span class="label" title="${titleAttr}">${lane.label}</span>
+        <span class="meta">${meta}</span>
       `;
-      row.addEventListener("click", (e) => {
-        if (e.shiftKey || e.metaKey) {
-          this.selectedTids = this.selectedTids || new Set();
-          if (this.selectedTids.has(lane.tid)) this.selectedTids.delete(lane.tid);
-          else this.selectedTids.add(lane.tid);
-          if (this.selectedTids.size === 0) this.selectedTids = null;
-        } else {
-          if (this.selectedTids && this.selectedTids.size === 1 && this.selectedTids.has(lane.tid)) {
-            this.selectedTids = null;
+      // Only sample lanes participate in tid filtering. Series lanes are
+      // per-profile readouts; clicking them does nothing.
+      if (lane.kind === "samples") {
+        row.addEventListener("click", (e) => {
+          if (e.shiftKey || e.metaKey) {
+            this.selectedTids = this.selectedTids || new Set();
+            if (this.selectedTids.has(lane.tid)) this.selectedTids.delete(lane.tid);
+            else this.selectedTids.add(lane.tid);
+            if (this.selectedTids.size === 0) this.selectedTids = null;
           } else {
-            this.selectedTids = new Set([lane.tid]);
+            if (this.selectedTids && this.selectedTids.size === 1 && this.selectedTids.has(lane.tid)) {
+              this.selectedTids = null;
+            } else {
+              this.selectedTids = new Set([lane.tid]);
+            }
           }
-        }
-        this._refreshLabelSelection();
-        this.draw();
-        this.fire();
-      });
+          this._refreshLabelSelection();
+          this.draw();
+          this.fire();
+        });
+      }
       this.laneLabelsEl.appendChild(row);
     }
     this._refreshLabelSelection();
@@ -168,7 +210,7 @@ export class Timeline {
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
     const tidToIdx = new Map();
-    this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
+    this.lanes.forEach((l, i) => { if (l.tid != null) tidToIdx.set(l.tid, i); });
     const buckets = new Float64Array(W * L);
     const span = Math.max(1, this.viewEndNs - this.viewStartNs);
     const { times, tids, stackOffsets, stackFrames, weights } = this.profile.samples;
@@ -325,8 +367,10 @@ export class Timeline {
     const hideScoped = this.getHideScoped();
     const W = Math.max(1, Math.floor(w));
     const L = this.lanes.length;
+    // Only sample lanes participate in tid bucketing; series lanes leave
+    // their slice of `buckets` empty and get rendered separately below.
     const tidToIdx = new Map();
-    this.lanes.forEach((l, i) => tidToIdx.set(l.tid, i));
+    this.lanes.forEach((l, i) => { if (l.tid != null) tidToIdx.set(l.tid, i); });
     const buckets = new Float64Array(W * L * C);
     const span = Math.max(1, this.viewEndNs - this.viewStartNs);
     const { times, tids, weights } = this.profile.samples;
@@ -365,6 +409,14 @@ export class Timeline {
       const lane = this.lanes[li];
       const y = li * LANE_H;
       const baseY = y + 3, barH = LANE_H - 6;
+      if (lane.kind === "series") {
+        // Filled area chart for series lanes (live-heap, RSS, etc.). The
+        // curve is sampled at heaptrack's `c` rate (~10ms), so we look up
+        // the value at each pixel-column's center via binary search and
+        // fill from the lane floor.
+        this._drawSeriesLane(ctx, lane, baseY, barH, W);
+        continue;
+      }
       const rowOff = (li * W) * C;
       for (let px = 0; px < W; px++) {
         // Total weight across colors in this pixel column.
@@ -402,6 +454,69 @@ export class Timeline {
         ctx.fillRect(0, y, w, LANE_H);
       }
     }
+  }
+
+  _drawSeriesLane(ctx, lane, baseY, barH, W) {
+    const { times, bytes } = lane.series;
+    const N = times.length;
+    if (N === 0 || lane.peak <= 0) return;
+    const span = Math.max(1, this.viewEndNs - this.viewStartNs);
+    const peak = lane.peak;
+
+    // For each pixel column, find the maximum series value within the
+    // time window that pixel covers. Using max (not "value at pixel
+    // center") preserves spikes when zoomed out — heaptrack's 10ms
+    // sampling is much finer than per-pixel time, and a single-cell
+    // spike collapsing into nothing would mislead.
+    ctx.fillStyle = lane.color;
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(0, baseY + barH);
+    let prevX = 0, prevY = baseY + barH;
+    let i = lowerBound(times, this.viewStartNs);
+    if (i > 0) i--; // include the sample just before the window for left edge
+    let nextPx = 0;
+    while (i < N) {
+      const tNs = times[i];
+      if (tNs > this.viewEndNs) break;
+      const px = Math.floor((tNs - this.viewStartNs) / span * W);
+      const v = bytes[i];
+      const yPos = baseY + barH - Math.min(barH, (v / peak) * barH);
+      if (px > nextPx) {
+        ctx.lineTo(px, prevY);
+        nextPx = px;
+      }
+      ctx.lineTo(px, yPos);
+      prevX = px;
+      prevY = yPos;
+      i++;
+    }
+    // Carry the last value to the right edge of the visible window so the
+    // area doesn't dip back to zero on the right.
+    ctx.lineTo(W, prevY);
+    ctx.lineTo(W, baseY + barH);
+    ctx.closePath();
+    ctx.fill();
+
+    // Stroke the top edge so the curve stays visible against busy backgrounds.
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = lane.color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    let started = false;
+    i = lowerBound(times, this.viewStartNs);
+    if (i > 0) i--;
+    while (i < N) {
+      const tNs = times[i];
+      if (tNs > this.viewEndNs) break;
+      const px = (tNs - this.viewStartNs) / span * W;
+      const yPos = baseY + barH - Math.min(barH, (bytes[i] / peak) * barH);
+      if (!started) { ctx.moveTo(px, yPos); started = true; }
+      else ctx.lineTo(px, yPos);
+      i++;
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   _drawSelection() {
@@ -645,6 +760,16 @@ function upperBound(arr, v) {
     if (arr[mid] <= v) lo = mid + 1; else hi = mid;
   }
   return lo;
+}
+
+function makeSeriesLane({ label, sublabel, series, color }) {
+  // Pre-compute peak; used both for the rendering normalization and the
+  // sublabel ("RSS · peak 3.12 GB"). Series may be empty for very short
+  // captures, in which case peak stays 0 and the lane just shows nothing.
+  const bytes = series.bytes;
+  let peak = 0;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] > peak) peak = bytes[i];
+  return { kind: "series", label, sublabel, color, series, peak };
 }
 
 // Every lane is painted in the accent blue. Per-thread coloring used to be
