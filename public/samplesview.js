@@ -101,8 +101,20 @@ export class SamplesView {
       case "size": {
         // No size column on perf profiles; falls back to time.
         if (!weights) { cmp = (a, b) => (times[a] - times[b]) * dir; break; }
+        // Sort by the same per-allocation size shown in the column —
+        // wAlloc[i] / wCount[i] cancels the kept-event scaling and
+        // yields the underlying allocInfo's `info.size`. Sorting by
+        // raw `weights[i]` (= allocCount × size / kept) instead would
+        // mix size with allocation frequency, e.g. a 16 KB site with
+        // a busy allocCount would outrank a 1.2 MB site with a small
+        // one and the displayed Size column would look unsorted.
+        const wAlloc = this.profile.samples._byKind?.["bytes-allocated"];
+        const wCount = this.profile.samples._byKind?.["alloc-count"];
+        const sizeOf = (wAlloc && wCount)
+          ? (i) => (wCount[i] > 0 ? wAlloc[i] / wCount[i] : 0)
+          : (i) => weights[i];
         cmp = (a, b) => {
-          const d = weights[a] - weights[b];
+          const d = sizeOf(a) - sizeOf(b);
           return (d !== 0 ? d : times[a] - times[b]) * dir;
         };
         break;
