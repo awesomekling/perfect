@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>perfect — perf.data viewer</title>
+  <title>perfect — perf.data &amp; heaptrack viewer</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
       <div class="file-info" id="file-info"></div>
       <div class="actions">
         <button id="open-btn" class="btn">Open…</button>
-        <input id="file-input" type="file" hidden accept=".data,application/octet-stream">
+        <input id="file-input" type="file" hidden accept=".data,.zst,.gz,application/octet-stream">
       </div>
     </header>
 
@@ -105,7 +105,7 @@
 
     <div id="dropzone" class="dropzone hidden">
       <div class="dropzone-card">
-        <div class="dropzone-title">Drop perf.data here</div>
+        <div class="dropzone-title">Drop a perf.data or heaptrack file here</div>
         <div class="dropzone-sub">or click Open…</div>
       </div>
     </div>
@@ -113,8 +113,8 @@
     <div id="empty" class="empty">
       <div class="empty-card">
         <h1>perfect</h1>
-        <p>A web viewer for Linux <code>perf.data</code> profiles.</p>
-        <p>Drop a <code>perf.data</code> file anywhere on this page, or pick one from below.</p>
+        <p>A web viewer for Linux <code>perf.data</code> CPU profiles and <code>heaptrack</code> heap captures.</p>
+        <p>Drop a file anywhere on this page, or pick one from below.</p>
         <ul id="profile-list" class="profile-list"></ul>
         <button id="empty-open-btn" class="btn primary">Open file…</button>
       </div>
