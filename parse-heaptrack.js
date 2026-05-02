@@ -408,7 +408,13 @@ class HeaptrackParser {
         const dsoId = this.internDso(dsoStr);
         for (let j = 0; j < ip.frames.length; j++) {
           const f = ip.frames[j];
-          const symStr = (f.funcIdx > 0 && this.htStrings[f.funcIdx]) || "[unknown]";
+          const rawSym = (f.funcIdx > 0 && this.htStrings[f.funcIdx]) || "[unknown]";
+          // heaptrack already C++-demangled what it could; the only names
+          // that still arrive mangled are Rust ones whose .llvm.<digits>
+          // suffix made __cxa_demangle bail. Clean those here so the tree
+          // shows e.g. `alloc::raw_vec::RawVecInner<A>::finish_grow`
+          // instead of the raw `_ZN5alloc...E.llvm.7757...` shell.
+          const symStr = cleanRustName(rawSym);
           const symId = this.internString(symStr);
           // File path goes into the function key so two functions with the
           // same unqualified name in different .cpp files don't collapse
@@ -575,6 +581,83 @@ class HeaptrackParser {
       },
     };
   }
+}
+
+// Best-effort Rust legacy-mangling cleanup. heaptrack uses __cxa_demangle,
+// which handles C++ Itanium mangling cleanly but doesn't know about Rust's
+// extensions, so symbols arrive in three states:
+//
+//   1. Fully mangled `_ZN…E.llvm.<digits>` — __cxa_demangle bailed because
+//      of the LLVM disambiguator suffix, so we get the raw shell.
+//   2. Fully mangled `_ZN…E` — __cxa_demangle bailed for some other
+//      reason, raw shell again.
+//   3. Partially demangled `path::with::$LT$…$GT$::function::h<hex>` —
+//      __cxa_demangle parsed the Itanium nested-name structure but left
+//      the Rust-specific identifier escapes and the trailing hash segment
+//      as opaque pieces.
+//
+// Walks all three down to the same form: `path::with::<T>::function`,
+// stripping the hash and translating escapes. Falls back to the input
+// unchanged when the string isn't recognisably Rust.
+const RUST_ESCAPES = [
+  ["$LT$", "<"], ["$GT$", ">"],
+  ["$LP$", "("], ["$RP$", ")"],
+  ["$C$",  ","],
+  ["$BP$", "*"], ["$RF$", "&"],
+  ["$u20$", " "], ["$u27$", "'"], ["$u3b$", ";"], ["$u2b$", "+"],
+  ["$u5b$", "["], ["$u5d$", "]"],
+  ["$u7b$", "{"], ["$u7d$", "}"],
+  ["$u7e$", "~"],
+];
+const RUST_HASH_RE = /::h[0-9a-f]{16,}(?:\.llvm\.\d+)?$/;
+
+function legacyParseItaniumNested(s) {
+  // Returns the demangled "::"-joined path for a `_ZN…E` body, or null if
+  // the body doesn't look like a sequence of length-prefixed segments.
+  if (!s.startsWith("_ZN") || !s.endsWith("E")) return null;
+  let body = s.slice(3, -1);
+  const parts = [];
+  while (body.length > 0) {
+    let i = 0;
+    while (i < body.length && body.charCodeAt(i) >= 0x30 && body.charCodeAt(i) <= 0x39) i++;
+    if (i === 0) return null;
+    const len = parseInt(body.slice(0, i), 10);
+    if (i + len > body.length) return null;
+    parts.push(body.slice(i, i + len));
+    body = body.slice(i + len);
+  }
+  return parts.length > 0 ? parts.join("::") : null;
+}
+
+function cleanRustName(name) {
+  if (typeof name !== "string" || name.length < 5) return name;
+  // Strip the LLVM disambiguator first — it confuses __cxa_demangle and
+  // contributes nothing the user cares about. Captured here so it gets
+  // dropped whether the rest of the symbol still looks mangled or not.
+  let s = name.replace(/\.llvm\.\d+$/, "");
+  // Cheap probe: anything to do here at all? A string with no `_ZN`
+  // prefix, no `$` escapes, and no trailing Rust hash is almost
+  // certainly already a clean C/C++ symbol — return it unchanged so the
+  // hot path stays fast.
+  const looksMangled = s.startsWith("_ZN") && s.endsWith("E");
+  const hasEscapes = s.indexOf("$") >= 0;
+  const hasHash = RUST_HASH_RE.test(s);
+  if (!looksMangled && !hasEscapes && !hasHash) return name;
+  // Form 1/2: still in raw _ZN…E form. Pull the segments out and rejoin
+  // with `::` so escape/hash cleanup below operates on the same shape
+  // we'd have if heaptrack had successfully demangled.
+  if (looksMangled) {
+    const parsed = legacyParseItaniumNested(s);
+    if (parsed === null) return name;
+    s = parsed;
+  }
+  // Strip the Rust stable-symbol hash if present. We allow it to be
+  // followed by another `.llvm.<n>` suffix in case the input was already
+  // partially demangled by heaptrack but still carried the suffix.
+  s = s.replace(RUST_HASH_RE, "");
+  // Translate path-segment escapes.
+  for (const [from, to] of RUST_ESCAPES) s = s.split(from).join(to);
+  return s;
 }
 
 // Parse a hex integer starting at `from` in `line` (until next space or EOL).
