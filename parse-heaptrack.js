@@ -466,6 +466,22 @@ class HeaptrackParser {
     const wTemporary = new Float64Array(N);
     const wCount = new Float64Array(N);
 
+    // Per-allocInfo kept count, so each kept event can carry a weight
+    // derived from the *exact* per-allocInfo totals we've already
+    // accumulated. The naive "size × stride" weight is unbiased in
+    // expectation but has high variance when allocInfo sizes vary widely
+    // (e.g. Vector grows: 16, 32, 64, …, MB). Driving the weights from
+    // (allocCount, freeCount, temporaryCount) per allocInfo gives an
+    // estimator that's exact for any allocInfo we sampled at all — the
+    // only remaining error is allocInfos whose `+` events all fell off
+    // stride and got skipped, which under-counts the rarest sites
+    // proportionally to exp(-N/stride).
+    const keptByAllocInfo = new Map();
+    for (let i = 0; i < N; i++) {
+      const aid = this.keptAllocInfoId[i];
+      keptByAllocInfo.set(aid, (keptByAllocInfo.get(aid) || 0) + 1);
+    }
+
     sampleStackOffsets[0] = 0;
     let stackPos = 0;
     for (let i = 0; i < N; i++) {
@@ -479,20 +495,19 @@ class HeaptrackParser {
       stackPos += stack.length;
       sampleStackOffsets[i + 1] = stackPos;
 
-      // FIFO leak pairing: of `allocCount` allocations through this site,
-      // the first `freeCount` are paired/freed; the rest leak. We know
-      // this kept event was the (siteIdx)-th allocation through its site,
-      // so it's leaked iff siteIdx >= freeCount.
       const allocCount = this.htAllocCounts[allocInfoId] || 0;
       const freeCount = this.htFreeCounts[allocInfoId] || 0;
-      const siteIdx = this.keptSiteIdx[i];
-      const leaked = (siteIdx >= freeCount);
-      const sized = size * this.stride;
+      const tempCount = this.htTemporaryCounts[allocInfoId] || 0;
+      const leakedCount = Math.max(0, allocCount - freeCount);
+      const kept = keptByAllocInfo.get(allocInfoId) || 1;
 
-      wAllocated[i] = sized;
-      wLeaked[i] = leaked ? sized : 0;
-      wTemporary[i] = this.keptTemporary[i] ? sized : 0;
-      wCount[i] = this.stride;
+      // Per-allocInfo true contributions, distributed across this
+      // allocInfo's kept events. Sum across kept events from the same
+      // allocInfo equals the true value exactly.
+      wAllocated[i] = (allocCount * size) / kept;
+      wLeaked[i]    = (leakedCount * size) / kept;
+      wTemporary[i] = (tempCount * size) / kept;
+      wCount[i]     = allocCount / kept;
     }
 
     // Capture-wide totals computed across ALL events (not just kept), for
