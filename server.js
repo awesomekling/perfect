@@ -246,11 +246,17 @@ async function loadProfile(absPath) {
     const profile = kind === "heaptrack"
       ? await parseHeaptrackData(absPath, {
           onProgress: ({ phase, lines, kept, fraction }) => {
-            setProgress(absPath, { phase, lines, kept, fraction,
-              message: phase === "finalize"
-                ? `Building call tree (${kept.toLocaleString()} samples)…`
-                : `Parsing ${(lines/1e6).toFixed(0)}M lines · ${kept.toLocaleString()} samples kept`,
-            });
+            // Phase-specific message + a fraction that's local to the
+            // phase (the loading bar uses it as-is). For heap captures
+            // the visible phases are: parse → finalize → cache.
+            let message;
+            if (phase === "finalize") {
+              const pct = Math.round((fraction || 0) * 100);
+              message = `Building call tree · ${kept.toLocaleString()} samples (${pct}%)`;
+            } else {
+              message = `Parsing ${(lines/1e6).toFixed(0)}M lines · ${kept.toLocaleString()} samples kept`;
+            }
+            setProgress(absPath, { phase, lines, kept, fraction, message });
           },
         })
       : await parsePerfData(absPath, {
@@ -262,13 +268,38 @@ async function loadProfile(absPath) {
           },
         });
     process.stderr.write(`\n  done in ${Date.now() - t0}ms\n`);
-    setProgress(absPath, { phase: "cache", fraction: 1, message: "Compressing cache…" });
+    // Cache-write progress: gzip-compressing 150-200 MB of JSON-encoded
+    // base64 chunks takes a noticeable few seconds for big captures.
+    // Track bytes written to the temp file every 200 ms so the bar
+    // keeps moving during this phase too. We don't know the final cache
+    // size up front, so the fraction stays partial (caps near the end
+    // and snaps to 1.0 when finish fires).
+    setProgress(absPath, { phase: "cache", fraction: 0, message: "Compressing cache…" });
     const tmp = cache + ".tmp";
     const out = fs.createWriteStream(tmp);
     const gz = zlib.createGzip({ level: 6 });
     gz.pipe(out);
-    await streamSerializeProfile(profile, gz);
-    await new Promise((res, rej) => { gz.end(); out.on("finish", res); out.on("error", rej); });
+    let cacheStop = false;
+    const cacheTicker = setInterval(async () => {
+      if (cacheStop) return;
+      try {
+        const st = await fsp.stat(tmp);
+        const mb = (st.size / (1024 * 1024)).toFixed(1);
+        // No known total — use a soft asymptote (1 - 1/(1+x/50MB)) so
+        // the bar approaches but never hits 100% during streaming.
+        const f = st.size / (st.size + 50 * 1024 * 1024);
+        setProgress(absPath, { phase: "cache", fraction: Math.min(0.95, f),
+          message: `Compressing cache · ${mb} MB written`,
+        });
+      } catch {}
+    }, 200);
+    try {
+      await streamSerializeProfile(profile, gz);
+      await new Promise((res, rej) => { gz.end(); out.on("finish", res); out.on("error", rej); });
+    } finally {
+      cacheStop = true;
+      clearInterval(cacheTicker);
+    }
     await fsp.rename(tmp, cache);
     const sz = (await fsp.stat(cache)).size;
     process.stderr.write(`  cached ${cache} (${sz} bytes)\n`);

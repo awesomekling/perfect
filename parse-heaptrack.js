@@ -473,7 +473,15 @@ class HeaptrackParser {
     return arr;
   }
 
-  finalize() {
+  // `onProgress` (optional) is called periodically while the kept events
+  // are materialised into typed-array form. The materialise loop walks
+  // every kept event, lazily flattens its trace tree (cache-miss the
+  // first time we see a given allocInfo), and copies the result into
+  // sampleStackFramesArr. For multi-million-event captures this runs
+  // long enough that the user wants to see the loading bar still
+  // moving — without progress here the UI looks stuck after the parse
+  // phase finishes.
+  finalize(onProgress) {
     const startNs = (this.firstTimeMs ?? 0) * 1_000_000;
     const endNs = (this.lastTimeMs ?? 0) * 1_000_000;
     // The debuggee line carries the full command; pull a short comm name for
@@ -513,6 +521,11 @@ class HeaptrackParser {
 
     sampleStackOffsets[0] = 0;
     let stackPos = 0;
+    // Tick at every 50k events — fine-grained enough for the bar to
+    // visibly move on a multi-million-event capture, coarse enough not
+    // to flood the progress channel. Fraction goes 0 → 1 over the loop;
+    // the calling layer rescales into the broader "finalize" budget.
+    const PROGRESS_INTERVAL = 50_000;
     for (let i = 0; i < N; i++) {
       const allocInfoId = this.keptAllocInfoId[i];
       const info = this.htAllocInfos[allocInfoId];
@@ -523,6 +536,9 @@ class HeaptrackParser {
       for (let j = 0; j < stack.length; j++) sampleStackFramesArr.push(stack[j]);
       stackPos += stack.length;
       sampleStackOffsets[i + 1] = stackPos;
+      if (onProgress && (i + 1) % PROGRESS_INTERVAL === 0) {
+        onProgress({ phase: "finalize", kept: N, fraction: (i + 1) / N });
+      }
 
       const allocCount = this.htAllocCounts[allocInfoId] || 0;
       const freeCount = this.htFreeCounts[allocInfoId] || 0;
@@ -768,6 +784,8 @@ export async function parseHeaptrackData(absPath, opts = {}) {
     }
   });
   process.stderr.write(`  parsed in ${Date.now() - t1}ms; ${parser._kept.toLocaleString()} samples\n`);
+  onProgress({ phase: "finalize", lines: 0, kept: parser._kept, fraction: 0 });
+  const result = parser.finalize(onProgress);
   onProgress({ phase: "finalize", lines: 0, kept: parser._kept, fraction: 1 });
-  return parser.finalize();
+  return result;
 }
