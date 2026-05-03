@@ -142,6 +142,7 @@ function setProfile(json, name) {
   profile = new Profile(json);
   els.empty.classList.add("hidden");
   _profileName = name;
+  document.title = name ? `${name} — perfect` : "perfect";
   updateFileInfoSummary();
 
   scopes = new Scopes(profile);
